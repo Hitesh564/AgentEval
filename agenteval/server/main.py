@@ -1,0 +1,289 @@
+import os
+import sqlite3
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+from agenteval.sdk.storage import TraceStore
+from agenteval.root_cause.engine import RootCauseEngine
+from agenteval.recommend.engine import RecommendationEngine
+from agenteval.benchmark.cli import evaluate_runs
+
+load_dotenv()
+
+app = FastAPI(
+    title="AgentEval API Dashboard Server",
+    description="Backend server supporting AgentEval's diagnostic dashboard, powered by real SQLite traces."
+)
+
+# Enable CORS for frontend dashboard (port 5173 / default localhost)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# SQLite store and engines
+db_path = "agenteval.db"
+store = TraceStore(db_path=db_path)
+rc_engine = RootCauseEngine(db_path=db_path)
+rec_engine = RecommendationEngine()
+
+class SessionSummary(BaseModel):
+    session_id: str
+    score: float
+    passed: bool
+    failure_tag: Optional[str] = None
+    timestamp: str
+
+@app.get("/api/health")
+def health_check() -> Dict[str, Any]:
+    """Basic health check endpoint."""
+    return {"status": "ok", "service": "agenteval-server", "database_exists": os.path.exists(db_path)}
+
+@app.get("/api/sessions", response_model=List[SessionSummary])
+def list_sessions() -> List[SessionSummary]:
+    """
+    Returns list of all traced sessions for Screen 1 (Conversation List).
+    Queries real session traces and computes actual failure classifications.
+    """
+    if not os.path.exists(db_path):
+        return []
+
+    # Get distinct session_ids
+    conn = sqlite3.connect(db_path)
+    cursor = conn.execute("SELECT session_id, MIN(timestamp_start) as start_time FROM traces GROUP BY session_id ORDER BY start_time DESC")
+    sessions = cursor.fetchall()
+    conn.close()
+
+    summaries = []
+    for session_id, timestamp in sessions:
+        nodes = store.get_session_traces(session_id)
+        if not nodes:
+            continue
+            
+        diagnosed = rc_engine.propagate_failures(nodes)
+        
+        # Calculate session score as average of all nodes' raw health
+        avg_score = sum(n["raw_health"] for n in diagnosed) / len(diagnosed)
+        
+        # Check if there is an active root cause or co-originator failure
+        root_cause = next((n for n in diagnosed if n["is_root_cause"]), None)
+        co_originator = next((n for n in diagnosed if n.get("is_co_originator")), None)
+        passed = root_cause is None and co_originator is None
+        
+        failure_node = root_cause or co_originator
+        failure_tag = failure_node["failure_type"].value if failure_node and failure_node["failure_type"] else None
+        
+        summaries.append(SessionSummary(
+            session_id=session_id,
+            score=round(avg_score, 2),
+            passed=passed,
+            failure_tag=failure_tag,
+            timestamp=timestamp
+        ))
+        
+    return summaries
+
+@app.get("/api/sessions/{session_id}/trace")
+def get_session_trace(session_id: str) -> Dict[str, Any]:
+    """
+    Returns full node trace and root cause evaluation for Screen 2 (Trace Detail).
+    Integrates evidence extraction and recommendations in real time.
+    """
+    nodes = store.get_session_traces(session_id)
+    if not nodes:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+    diagnosed = rc_engine.propagate_failures(nodes)
+    
+    # Calculate overall session score
+    avg_score = sum(n["raw_health"] for n in diagnosed) / len(diagnosed)
+    root_cause = next((n for n in diagnosed if n["is_root_cause"]), None)
+    passed = root_cause is None and not any(n.get("is_co_originator") for n in diagnosed)
+    
+    root_cause_summary = None
+    if root_cause:
+        root_cause_summary = {
+            "node_id": root_cause["node_id"],
+            "confidence": round(root_cause["confidence"], 2),
+            "confidence_tier": root_cause["confidence_tier"]
+        }
+        
+    co_originators = [
+        {"node_id": n["node_id"], "raw_health": round(n["raw_health"], 2)}
+        for n in diagnosed if n.get("is_co_originator")
+    ]
+    if not co_originators:
+        co_originators = None
+        
+    confidence_tier = diagnosed[0]["confidence_tier"] if diagnosed else "high"
+    
+    output_nodes = []
+    for node in diagnosed:
+        node_id = node["node_id"]
+        
+        # Fetch real recommendation recommendations if the node failed (root cause or co-originator)
+        node_recs = []
+        if (node["is_root_cause"] or node.get("is_co_originator")) and node["failure_type"]:
+            node_recs = rec_engine.generate_recommendations(node["failure_type"], node["evidence"])
+            
+        output_nodes.append({
+            "node_id": node_id,
+            "node_type": node["node_type"],
+            "raw_health": round(node["raw_health"], 2),
+            "adjusted_health": round(node["adjusted_health"], 2),
+            "is_root_cause": node["is_root_cause"],
+            "is_inherited_degradation": node.get("is_inherited_degradation", False),
+            "is_co_originator": node.get("is_co_originator", False),
+            "inherited_from_node_ids": node.get("inherited_from_node_ids", []),
+            "parent_node_ids": node["parent_node_ids"],
+            "evidence": node["evidence"],
+            "confidence": round(node["confidence"], 2) if "confidence" in node else 1.0,
+            "confidence_tier": node.get("confidence_tier", "high"),
+            "recommendations": node_recs
+        })
+
+    return {
+        "session_id": session_id,
+        "overall_score": round(avg_score, 2),
+        "passed": passed,
+        "root_cause": root_cause_summary,
+        "co_originators": co_originators,
+        "confidence_tier": confidence_tier,
+        "nodes": output_nodes
+    }
+
+@app.get("/api/benchmark/compare")
+def compare_versions() -> Dict[str, Any]:
+    """
+    Returns benchmark comparison summary for Screen 3 (Benchmark/Regression Report).
+    Calculates averages dynamically from the calibration session sets in SQLite.
+    """
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=400, detail="Database not found. Run agent calibration first.")
+        
+    conn = sqlite3.connect(db_path)
+    cursor = conn.execute("SELECT DISTINCT session_id FROM traces")
+    sessions = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    # Filter A: 'calib' sessions
+    sessions_a = [s for s in sessions if "calib" in s]
+    if not sessions_a:
+        raise HTTPException(status_code=400, detail="No calibration traces found. Run agent --calibration.")
+        
+    # Filter B: 'fixed' sessions
+    sessions_b = [s for s in sessions if "fixed" in s]
+    if not sessions_b:
+        raise HTTPException(
+            status_code=400, 
+            detail="No 'fixed' runs found in database. Run fixed agent calibration (e.g. `python examples/simple_rag_agent.py --calibration --fixed`) to generate runs for comparison."
+        )
+        
+    # Import and run calculation logic
+    res_a = evaluate_runs(sessions_a, db_path, "calib")
+    res_b = evaluate_runs(sessions_b, db_path, "fixed")
+
+    
+    # Determine dynamic overall verdict
+    better = 0
+    worse = 0
+    for k in ["instruction_following", "retrieval_quality", "tool_accuracy"]:
+        if res_b["averages"][k] > res_a["averages"][k] + 0.01:
+            better += 1
+        elif res_b["averages"][k] < res_a["averages"][k] - 0.01:
+            worse += 1
+    for k in ["latency", "hallucination_rate"]:
+        if res_b["averages"][k] < res_a["averages"][k] - 0.01:
+            better += 1
+        elif res_b["averages"][k] > res_a["averages"][k] + 0.01:
+            worse += 1
+            
+    # Confidence calculation
+    sum_improved = 0.0
+    sum_degraded = 0.0
+    max_lat = max(0.5, res_a["averages"]["latency"], res_b["averages"]["latency"])
+    
+    for k in ["instruction_following", "retrieval_quality", "tool_accuracy"]:
+        d = res_b["averages"][k] - res_a["averages"][k]
+        if d > 0.01:
+            sum_improved += d
+        elif d < -0.01:
+            sum_degraded += abs(d)
+            
+    for k in ["hallucination_rate"]:
+        d = res_a["averages"][k] - res_b["averages"][k]
+        if d > 0.01:
+            sum_improved += d
+        elif d < -0.01:
+            sum_degraded += abs(d)
+            
+    # Latency (lower is better)
+    lat_d = (res_a["averages"]["latency"] - res_b["averages"]["latency"]) / max_lat
+    if lat_d > 0.01:
+        sum_improved += lat_d
+    elif lat_d < -0.01:
+        sum_degraded += abs(lat_d)
+        
+    total_diff = sum_improved + sum_degraded
+    confidence = 0.0
+    if total_diff > 0:
+        if better > worse:
+            confidence = sum_improved / (total_diff + 0.05)
+        elif worse > better:
+            confidence = sum_degraded / (total_diff + 0.05)
+            
+    confidence = max(0.0, min(1.0, confidence))
+
+    if better > worse:
+        verdict = "Version B is BETTER"
+    elif worse > better:
+        verdict = "Version A is BETTER"
+    else:
+        verdict = "Versions are COMPARABLE"
+
+    metrics_list = []
+    for metric_name, key in [
+        ("Instruction Following", "instruction_following"),
+        ("Hallucination Rate", "hallucination_rate"),
+        ("Tool-Calling Accuracy", "tool_accuracy"),
+        ("Retrieval Quality", "retrieval_quality"),
+        ("Average Latency (s)", "latency")
+    ]:
+        val_a = res_a["averages"][key]
+        val_b = res_b["averages"][key]
+        delta = val_b - val_a
+        
+        # Directional delta status
+        if key in ("latency", "hallucination_rate"):
+            status = "IMPROVED" if delta < -0.01 else ("DEGRADED" if delta > 0.01 else "UNCHANGED")
+        else:
+            status = "IMPROVED" if delta > 0.01 else ("DEGRADED" if delta < -0.01 else "UNCHANGED")
+            
+        metrics_list.append({
+            "metric": metric_name,
+            "val_a": round(val_a, 2),
+            "val_b": round(val_b, 2),
+            "delta": round(delta, 2),
+            "status": status
+        })
+        
+    return {
+        "version_a": "v1.0.0-baseline ('calib')",
+        "version_b": "v1.0.1-fixed-retrieval ('fixed')",
+        "overall_verdict": f"Overall Verdict: {verdict} (confidence: {confidence*100:.1f}%)",
+        "metrics": metrics_list,
+        "accuracy_a": res_a["accuracy"],
+        "accuracy_b": res_b["accuracy"],
+        "pass_rate_a": res_a["pass_rate"],
+        "pass_rate_b": res_b["pass_rate"],
+        "total_runs": res_a["total_runs"]
+    }
+
+
+

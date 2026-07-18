@@ -1,0 +1,41 @@
+# Virtual Environment
+aienv/
+venv/
+ENV/
+env/
+
+# Python bytecode & cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases & logs
+*.db
+*.db-journal
+*.log
+
+# React / Node Dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/build/
+.eslintcache
+
+# Python packaging & distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Sensitive local environments
+.env
+.env.local
