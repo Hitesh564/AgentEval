@@ -1,0 +1,59 @@
+- id: "case_b01"
+  query: "Can you retrieve standard return rules and check policy?"
+  category: "branch_a_failure"
+  expected_root_cause: "policy_retriever"
+  resolved_in_fixed_mode: true
+  is_clean: false
+  notes: "Branch A alone is the true cause (policy_retriever fails, product_retriever is healthy)."
+
+- id: "case_b02"
+  query: "Audit international return requirements and inspect policy?"
+  category: "branch_a_failure"
+  expected_root_cause: "policy_retriever"
+  resolved_in_fixed_mode: true
+  is_clean: false
+  notes: "Branch A alone is the true cause."
+
+- id: "case_b03"
+  query: "What is standard product warranty?"
+  category: "branch_b_failure"
+  expected_root_cause: "product_retriever"
+  resolved_in_fixed_mode: true
+  is_clean: false
+  notes: "Branch B alone is the true cause (product_retriever fails, policy_retriever is healthy)."
+
+- id: "case_b04"
+  query: "Find product defect warranty terms?"
+  category: "branch_b_failure"
+  expected_root_cause: "product_retriever"
+  resolved_in_fixed_mode: true
+  is_clean: false
+  notes: "Branch B alone is the true cause."
+
+- id: "case_b05"
+  query: "Generate return and warranty guidelines summary."
+  category: "synthesizer_failure"
+  expected_root_cause: "synthesizer"
+  is_clean: false
+  notes: "Both branches are healthy but the synthesizer itself fails."
+
+- id: "case_b06"
+  query: "Create unified outline for return shipping and warranty period."
+  category: "synthesizer_failure"
+  expected_root_cause: "synthesizer"
+  is_clean: false
+  notes: "Both branches are healthy but the synthesizer itself fails."
+
+- id: "case_b07"
+  query: "Lookup return timeline policy and product warranty details."
+  category: "ambiguous_failure"
+  expected_root_cause: "ambiguous"
+  is_clean: false
+  notes: "Ambiguous dual failure (both retrievers degrade with close health scores, gap < 0.10)."
+
+- id: "case_b08"
+  query: "Can you compile return policy details and warranty specifications?"
+  category: "ambiguous_failure"
+  expected_root_cause: "ambiguous"
+  is_clean: false
+  notes: "Ambiguous dual failure."
