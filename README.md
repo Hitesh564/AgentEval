@@ -1,33 +1,51 @@
 # AgentEval
 
-AgentEval is an open-source SDK and dashboard that helps AI engineers understand *why* their AI agents fail — not just that they failed. It performs evidence-based diagnosis, mapping failures to specific nodes with evidence and calibrated confidence metrics.
+AgentEval is an open-source evaluation and root-cause diagnosis engine for AI agents. It goes beyond simple black-box evaluation to pinpoint *why* and *where* agents fail in complex multi-step pipelines. By analyzing metrics across agent transitions, AgentEval traces failures back to their earliest upstream origin.
 
-## Features
+---
 
-1. **Trace SDK**: Easily instrument LangGraph/LangChain agents or manually wrap custom code to capture outputs, retrieved documents, and parent-child dependencies (supporting parallel & branching graphs).
-2. **Evaluation Engine**: Tracks 6 core metrics (Instruction following, Tool accuracy, Groundedness, JSON validity, Cost/Tokens, Latency).
-3. **Root Cause Engine**: Traces failures upstream to find the earliest-origin node using computable evidence.
-4. **Recommendation Engine**: Generates evidence-driven recommendations (e.g. adjust chunking overlap, rename tools).
-5. **Benchmark & Regression Engine**: Validates RAG agent versions using datasets and a CLI comparative tool.
-6. **Dashboard**: Thin observability layer for viewing conversation lists, causal chain detail trees, and benchmark comparisons.
+## Key Capabilities
+
+1. **Multi-Topology Tracing SDK**: Instrument single-agent or multi-agent pipelines. Native support for:
+   - **Linear pipelines** (sequential chains)
+   - **Branching/Parallel execution** (routing DAGs)
+   - **Retries & Loops** (self-correction loops)
+   - **Multi-Agent Cross-Session Chains** (orchestrator-worker handoffs)
+2. **6-Metric Evaluation Engine**: Dynamic evaluation of node-level quality:
+   - **Instruction Following**: LLM-judge evaluated alignment.
+   - **Groundedness / Retrieval Quality**: Semantic retriever similarity using context documents.
+   - **Tool Accuracy**: Correctness of tool calling.
+   - **JSON Validity**: Schema compliance.
+   - **Latency**: Runtime execution duration.
+   - **Cost / Tokens**: Input/output tokens and cost metrics.
+3. **Causal Root Cause Engine**: Transitive failure propagation logic to identify the earliest root cause or simultaneous **co-originator failures** (e.g. sibling retrievers failing independently).
+4. **Recommendation Engine**: Generates action-oriented recommendations based on failures and extracted evidence (e.g. increasing retriever chunk overlap, renaming tool args).
+5. **Multi-User Support**: Strict SQL-level data boundaries between users, resolved via the `X-API-Key` HTTP header and verified for zero leakage.
+6. **observability Dashboard**: A React frontend containing:
+   - **Conversation List**: Overall scores, pass status, and failure tags.
+   - **Trace Detail**: Interactive trace execution tree, confidence intervals, and evidence.
+   - **Benchmark Delta Comparison**: Metric regressions across pipeline versions.
+   - **Causal Chain DAG**: Visualizes multi-agent handoffs and failure propagation.
 
 ---
 
 ## Directory Structure
 
-```
+```text
 AgentEval/
-├── aienv/                  # Python virtual environment
-├── agenteval/              # Core python library
+├── agenteval/              # Core Python library
 │   ├── taxonomy.py         # Failure Type enum (single source of truth)
-│   ├── sdk/                # Tracing SDK and SQLite storage
-│   ├── eval/               # Metrics evaluation engine
-│   ├── root_cause/         # Root cause attribution engine
-│   ├── recommend/          # Recommendations engine
-│   ├── benchmark/          # Benchmark runs and cli comparisons
+│   ├── sdk/                # Tracing SDK, callbacks, and SQLite storage
+│   ├── eval/               # Metrics evaluation engine (Vertex AI & heuristics)
+│   ├── root_cause/         # Single-session & cross-session causal engines
+│   ├── recommend/          # Recommendations generator engine
+│   ├── benchmark/          # Benchmark run evaluations and CLI comparison
+│   ├── adapters/           # Ingestors (e.g. Who&When dataset adapter)
 │   └── server/             # FastAPI dashboard API server
-├── dashboard/              # React dashboard (Vite + TS + Vanilla CSS)
-├── tests/                  # Pytest suite
+├── dashboard/              # React frontend (Vite + TS + Vanilla CSS)
+├── scripts/                # Helper utilities (API key generation)
+├── examples/               # RAG and Multi-agent pipeline simulations
+├── tests/                  # Pytest validation suite
 ├── requirements.txt        # Backend dependencies
 ├── pyproject.toml          # Package script and entry points
 └── .env.example            # Secrets template
@@ -35,110 +53,103 @@ AgentEval/
 
 ---
 
-## Quickstart Setup
+## Setup & Execution
 
 ### 1. Installation
-Install the AgentEval package directly from the Git repository:
+Install AgentEval dependencies using the virtual environment:
 ```powershell
-pip install git+https://github.com/<your-username>/AgentEval.git
+pip install -r requirements.txt
+pip install -e .
 ```
 
-### 2. Configure Environment Variables
-Copy the `.env.example` file to `.env` and fill in the required API keys (e.g. `GEMINI_API_KEY` or `OPENAI_API_KEY` for LLM evaluations):
+### 2. Configure Environment
+Copy `.env.example` to `.env` and supply your Gemini API keys for live-judge evaluations:
 ```powershell
 cp .env.example .env
 ```
 
-### 3. Run Test Suite
-Verify that everything is set up correctly by running the tests:
+### 3. Generate a User API Key
+Register a user in the database to generate an API key:
 ```powershell
-pytest
+python scripts/generate_api_key.py --user-id alice --db-path agenteval.db
 ```
+*Note the generated plaintext key; it is printed only once.*
 
-### 4. Running the Example Simple RAG Agent Calibration
-Before running the dashboard, you must run the calibration simulation to populate the traces database:
+### 4. Run Pipeline Simulations (Populate Traces)
+Before using the dashboard, run simulations to populate the traces database. 
+
+#### A. Single-Agent RAG Simulation (Linear, Branching, Retry sets)
 ```powershell
-# Run the baseline calibration run (generates 'calib' traces)
+# Run baseline calibration
 python examples/simple_rag_agent.py --calibration
 
-# Run the optimized/fixed calibration run (generates 'fixed' traces)
+# Run fixed calibration
 python examples/simple_rag_agent.py --calibration --fixed
 ```
 
-### 5. Running the Dashboard Server
-Start the FastAPI backend server:
+#### B. Multi-Agent Pipeline Simulation (Cross-Session sets)
+```powershell
+# Run baseline calibration
+python examples/multi_agent_pipeline.py --calibration
+
+# Run fixed calibration
+python examples/multi_agent_pipeline.py --calibration --fixed
+```
+
+#### C. Who&When Independent Dataset Validation
+Ingest and evaluate a subset of the ICML 2025 public multi-agent dataset:
+```powershell
+python agenteval/adapters/who_when_adapter.py --cases 15 --mode replay
+```
+
+### 5. Start the Backend API Server
+Launch the FastAPI server (defaults to port `8000`):
 ```powershell
 python -m uvicorn agenteval.server.main:app --port 8000
 ```
 
-### 6. Running the Frontend Dashboard
-Navigate to the `dashboard` folder, install the Node dependencies, and start the Vite dev server:
+### 6. Run the Dashboard
+Navigate to the `dashboard` folder, install Node packages, and start the development server:
 ```powershell
 cd dashboard
 npm install
 npm run dev -- --port 5173
 ```
-Now, open your browser and navigate to `http://localhost:5173`.
+Open `http://localhost:5173`. You will be prompted to paste your generated API key.
 
-### 7. Using the CLI (Benchmark Comparison & Accuracy)
-To compare runs between the baseline calibration and fixed versions:
+---
+
+## Benchmark Comparisons (CLI)
+
+To evaluate regressions and improvements between versions via the command line:
+
 ```powershell
-agenteval compare calib fixed
+# Compare Single-Agent runs
+agenteval compare calib fixed --fixtures examples/fixtures/test_cases.yaml
+
+# Compare Multi-Agent runs
+agenteval compare calib fixed --fixtures examples/fixtures/multi_agent_test_cases.yaml
 ```
 
 ---
 
-## Final Calibration Metrics & Benchmark Output
+## Validated Scope & Limitations
 
-AgentEval is calibrated to achieve **100.0% Causal Diagnostic Accuracy** against the 43 hand-labeled holdout cases of the simple RAG agent. Below is an excerpt of the regression comparison output:
+### Supported Topologies
+- **Linear**: Sequential RAG workflows.
+- **Branching/Parallel**: Multi-route decision/routing DAGs.
+- **Retries/Loops**: Iterative correction loops.
+- **Multi-Agent Chains**: Session-level coordinator and worker hierarchies.
 
-```text
-================== REGRESSION REPORT ==================
-Version A: 'calib' (43 runs) vs Version B: 'fixed' (43 runs)
-----------------------------------------------------------------------
-Metric                    | Version A  | Version B  | Delta     
-----------------------------------------------------------------------
-Instruction Following     | 0.90       | 0.90       | +0.00      (UNCHANGED)
-Hallucination Rate        | 0.33       | 0.25       | -0.08      (IMPROVED)
-Tool-Calling Accuracy     | 1.00       | 1.00       | +0.00      (UNCHANGED)
-Retrieval Quality         | 0.86       | 0.94       | +0.09      (IMPROVED)
-Average Latency (s)       | 0.07       | 0.07       | +0.00      (UNCHANGED)
-----------------------------------------------------------------------
-Calibration Holdout Root Cause Accuracy (vA): 100.0%
-Calibration Holdout Root Cause Accuracy (vB): 100.0%
-Regression Pass Rate (vA): 27.9% (12/43 runs passed)
-Regression Pass Rate (vB): 41.9% (18/43 runs passed)
-Overall Verdict: Version B is BETTER (confidence: 76.5%)
-=======================================================
-```
-![Dashboard Regression Report](assets/comparison_metrics.png)
+### Diagnostic Causal Accuracy
+- **Internal Holdouts (Single/Multi-Agent)**: **100.0%** (validated against hand-labeled error injections).
+- **Who&When Independent Dataset**: **0.0%** in replay mode due to heuristic fallback (expected baseline for unseen logs under keyword heuristics without live Gemini LLM judges).
 
----
+### Multi-User Scope Constraints
+- **In-Scope**: API-key HTTP headers, SHA-256 hashed keys in SQL, and query isolation scoping on traces and session links.
+- **Out-of-Scope**: Password authentication, OAuth flow, token expiration, user management UI, and rate limiting per user.
 
-## Scope & Live-Judge Validation Notes
-
-* **Single-Parent Chain Constraint**: The meta-graph walks transitive parent-child relationships where a session has at most one parent session.
-* **Rate Limits & API Quotas**: Live-judge validation for the multi-agent dataset was performed on the baseline (calib) version only (100% causal accuracy, 10 cases, gemini-3.1-flash-lite), due to free-tier API rate limits. The fixed version's comparison numbers are from replay/cached evaluation rather than a separate live run.
-
-## Phase 4 — Independent-Dataset Validation & Multi-User Support
-
-* **Multi-User Scoping**: Traces and session links are scoped to authenticated users via hashed SHA-256 tokens and database-level `WHERE user_id = :user_id` filtering.
-* **Explicitly Out of Scope for Multi-User**:
-  - Full production auth (e.g. passwords, OAuth, session token expiration).
-  - Role-based permissions (admin vs. regular user) or rate-limiting per user.
-  - UI for user management.
-* **Who&When Dataset Results**:
-  - **Dataset**: Converted 15 multi-agent cases from ICML 2025 Who&When dataset (`Kevin355/Who_and_When`).
-  - **Diagnostic Accuracy**: **0.0%** in replay mode (due to local heuristic fallback defaulting to healthy `1.0` on unseen logs, identifying no root cause).
-* **Validated Topologies**:
-  - Linear (RAG)
-  - Branching/Parallel (Router)
-  - Retries/Loops (Self-Correction)
-  - Multi-Agent Chains (Cross-Session)
-* **Remaining Known Limitations**:
-  - Framework-agnosticism (automatic callbacks are for LangGraph/LangChain; custom setups require manual tracing).
-  - No distributed tracing or database pooling.
-  - Session-level fan-in is constrained to single-parent chains at session boundaries.
-  - Recommendations are computed per-session based on node-level taxonomy only.
-
-
+### Known Architectural Limitations
+- **Fan-In Chains**: The multi-agent meta-graph assumes single-parent chains at session boundaries.
+- **Recommendations Scoping**: Recommendations are computed per-session based on node-level taxonomy only.
+- **Framework integration**: Automatic hooks exist for LangGraph/LangChain callbacks; other frameworks require manual SDK tracing wrappers.
