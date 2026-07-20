@@ -16,9 +16,10 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
     Automatically logs node transitions, tool calls, and retrieval events
     to the TraceStore (SQLite database) with parent-node relationships.
     """
-    def __init__(self, session_id: str, db_path: str = "agenteval.db"):
+    def __init__(self, session_id: str, db_path: str = "agenteval.db", parent_session_id: Optional[str] = None, api_key: Optional[str] = None):
         self.session_id = session_id
         self.db_path = db_path
+        self.parent_session_id = parent_session_id
         self.store = TraceStore(db_path=db_path)
         # Maps active run_id -> active node trace dict
         self.active_runs: Dict[str, Dict[str, Any]] = {}
@@ -26,6 +27,13 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
         self.completed_nodes: List[str] = []
         # Tracks attempt counts for each node_id to populate attempt_number automatically
         self.node_attempts: Dict[str, int] = {}
+
+        self.user_id = None
+        if api_key:
+            self.user_id = self.store.resolve_user_id(api_key)
+
+        if parent_session_id:
+            self.store.save_session_link(session_id, parent_session_id, link_reason="Handoff", user_id=self.user_id)
 
     def _resolve_node_type(self, node_name: str) -> str:
         """Resolves node names to taxonomy types."""
@@ -77,6 +85,7 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
                 "inputs": inputs,
                 "parent_node_ids": parents,
                 "attempt_number": attempt,
+                "user_id": self.user_id,
                 "tool_name": None,
                 "tool_args": None,
                 "tool_result": None,

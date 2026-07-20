@@ -225,6 +225,7 @@ def test_sibling_scoped_co_originators():
             "node_type": "planner",
             "timestamp_start": "2026-07-10T12:00:00",
             "timestamp_end": "2026-07-10T12:00:00.100",
+            "outputs": {"plan": "Valid plan."}
         },
         {
             "session_id": "session_sib_co",

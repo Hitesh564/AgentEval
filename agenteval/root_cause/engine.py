@@ -106,11 +106,13 @@ class RootCauseEngine:
                 evidence["judge_mode"] = g_res["judge_mode"]
                 
             # Instruction following evaluation
-            system_prompt = "Return cancellation plan and refund eligibility" if "eligibility" in str(inputs) else "Answer queries correctly"
+            q_val = inputs.get("query") or inputs.get("q") or ""
+            system_prompt = f"Answer queries correctly. Query: {q_val}"
             inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
             evidence["instruction_following"] = inst_res["score"]
-            if inst_res["judge_mode"] == "llm":
-                evidence["judge_mode"] = "llm"
+            if inst_res["judge_mode"] in ("llm", "cached_llm", "heuristic_fallback"):
+                if evidence.get("judge_mode") not in ("llm", "cached_llm"):
+                    evidence["judge_mode"] = inst_res["judge_mode"]
 
         # 5. Critic correctness evaluation
         if node["node_type"] == "critic" and session_traces:

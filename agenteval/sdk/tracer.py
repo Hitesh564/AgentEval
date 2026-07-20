@@ -13,7 +13,7 @@ class trace:
             t.inputs = {"query": "hello"}
             t.outputs = {"response": "hi"}
     """
-    def __init__(self, session_id: str, node_id: str, node_type: str, db_path: str = "agenteval.db"):
+    def __init__(self, session_id: str, node_id: str, node_type: str, db_path: str = "agenteval.db", parent_session_id: Optional[str] = None, api_key: Optional[str] = None):
         self.session_id = session_id
         self.node_id = node_id
         self.node_type = node_type
@@ -29,6 +29,13 @@ class trace:
         self.tokens_in = 0
         self.tokens_out = 0
         self.cost_usd = 0.0
+
+        self.user_id = None
+        if api_key:
+            self.user_id = self.store.resolve_user_id(api_key)
+
+        if parent_session_id:
+            self.store.save_session_link(session_id, parent_session_id, link_reason="Handoff", user_id=self.user_id)
 
     def __enter__(self):
         self.timestamp_start = datetime.now(timezone.utc).isoformat()
@@ -56,7 +63,8 @@ class trace:
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "cost_usd": self.cost_usd,
-            "parent_node_ids": self.parent_node_ids
+            "parent_node_ids": self.parent_node_ids,
+            "user_id": self.user_id
         }
         self.store.save_trace_node(trace_data)
         # Propagate exceptions if any

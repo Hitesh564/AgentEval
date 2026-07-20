@@ -2,7 +2,7 @@ import os
 import argparse
 import sqlite3
 import yaml
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from agenteval.eval.metrics import EvaluationEngine
 from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.sdk.storage import TraceStore
@@ -14,7 +14,7 @@ def load_fixtures(fixtures_path: str = "examples/fixtures/test_cases.yaml") -> L
     with open(fixtures_path, "r") as f:
         return yaml.safe_load(f)
 
-def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", mode: str = "replay", fixtures_path: str = "examples/fixtures/test_cases.yaml") -> Dict[str, Any]:
+def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", mode: str = "replay", fixtures_path: str = "examples/fixtures/test_cases.yaml", user_id: Optional[str] = None) -> Dict[str, Any]:
     """Computes averages of the six metrics and attributes root causes."""
     store = TraceStore(db_path=db_path)
     rc_engine = RootCauseEngine(db_path=db_path, mode=mode)
@@ -31,75 +31,165 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
     correct_attributions = 0
     passed_runs = 0
     fixtures = load_fixtures(fixtures_path)
+    eval_count = 0
+    heuristic_count = 0
     
-    for session_id in session_ids:
-        traces = store.get_session_traces(session_id)
-        if not traces:
-            continue
-            
-        diagnosed = rc_engine.propagate_failures(traces)
+    is_multi_agent = "multi_agent" in fixtures_path
+    if is_multi_agent:
+        from agenteval.root_cause.cross_session import CrossSessionEngine
+        cross_engine = CrossSessionEngine(db_path=db_path, mode=mode)
         
-        # Extract metrics
-        for node in diagnosed:
-            evidence = node["evidence"]
-            if node["node_type"] == "generator" or node["node_id"] == "synthesizer":
-                metrics_summary["instruction_following"].append(evidence["instruction_following"])
-                if evidence["groundedness_ratio"] is not None:
-                    metrics_summary["hallucination_rate"].append(1.0 - evidence["groundedness_ratio"])
-            elif node["node_type"] == "retriever":
-                if evidence["retriever_similarity"] is not None:
-                    metrics_summary["retrieval_quality"].append(evidence["retriever_similarity"])
-            elif node["node_type"] == "planner":
-                # tool accuracy (1.0 if not check_order_history)
-                tool_name = node.get("tool_name")
-                acc = 0.0 if tool_name == "check_order_history" else 1.0
-                metrics_summary["tool_accuracy"].append(acc)
-                
-            metrics_summary["latency"].append(evidence["latency"])
-
-        # Check attribution accuracy against ground truth in fixtures
-        try:
-            suffix = int(session_id.split("_")[-1])
-            if "retry" in fixtures_path:
-                idx = suffix - 300
-            elif "branching" in fixtures_path:
-                idx = suffix - 200
-            else:
-                idx = suffix - 100
-            if 0 <= idx < len(fixtures):
-                fixture = fixtures[idx]
-                expected_rc = fixture["expected_root_cause"]
-                
-                # If version is fixed and case was resolved in fixed mode, expected root cause is none
-                if version == "fixed" and fixture.get("resolved_in_fixed_mode"):
-                    expected_rc = "none"
-                
-                # Find diagnosed root cause node name and type
-                diagnosed_rc = "none"
-                diagnosed_rc_type = "none"
-                has_co_originator = any(node.get("is_co_originator") for node in diagnosed)
-                for node in diagnosed:
-                    if node.get("is_root_cause"):
-                        diagnosed_rc = node["node_id"]
-                        diagnosed_rc_type = node["node_type"]
-                        break
+    for session_id in session_ids:
+        if is_multi_agent:
+            res_chain = cross_engine.diagnose_chain(session_id, user_id=user_id)
+            root_cause_session = res_chain["root_cause_session"]
+            co_sessions = res_chain["co_contributing_sessions"]
+            
+            # Extract metrics from all sessions in the chain
+            for session_info in res_chain["chain"]:
+                s_id = session_info["session_id"]
+                s_traces = store.get_session_traces(s_id, user_id=user_id)
+                s_diagnosed = rc_engine.propagate_failures(s_traces)
+                for node in s_diagnosed:
+                    evidence = node["evidence"]
+                    if "judge_mode" in evidence:
+                        eval_count += 1
+                        if evidence["judge_mode"] == "heuristic_fallback":
+                            heuristic_count += 1
+                    if node["node_type"] == "generator" or node["node_id"] in ("synthesizer", "scoring_generator", "conductor_generator"):
+                        if evidence.get("instruction_following") is not None:
+                            metrics_summary["instruction_following"].append(evidence["instruction_following"])
+                        if evidence.get("groundedness_ratio") is not None:
+                            metrics_summary["hallucination_rate"].append(1.0 - evidence["groundedness_ratio"])
+                    elif node["node_type"] == "retriever" or node["node_id"] in ("retrieval_retriever", "scoring_retriever"):
+                        if evidence.get("retriever_similarity") is not None:
+                            metrics_summary["retrieval_quality"].append(evidence["retriever_similarity"])
+                    elif node["node_type"] == "planner":
+                        tool_name = node.get("tool_name")
+                        acc = 0.0 if tool_name == "check_order_history" else 1.0
+                        metrics_summary["tool_accuracy"].append(acc)
+                    metrics_summary["latency"].append(evidence["latency"])
+            
+            # Check correctness against expected root cause session and node in fixtures
+            try:
+                suffix = int(session_id.split("_")[-1])
+                fixture = next((f for f in fixtures if f["id"] == f"multi_agent_case_{suffix - 399:03d}"), None)
+                if fixture:
+                    expected_rc_session = fixture["expected_root_cause_session"]
+                    expected_rc_node = fixture["expected_root_cause_node"]
+                    
+                    if version == "fixed":
+                        if expected_rc_session in ("retrieval_agent", "scoring_agent"):
+                            expected_rc_session = "none"
+                            expected_rc_node = "none"
+                        elif expected_rc_session == "ambiguous":
+                            expected_rc_session = "none"
+                            expected_rc_node = "none"
+                            
+                    # Evaluate correctness
+                    if expected_rc_session == "ambiguous":
+                        is_correct = (root_cause_session == "ambiguous" and len(co_sessions) > 0)
+                    elif expected_rc_session == "none":
+                        is_correct = (root_cause_session == "none")
+                    else:
+                        # Map expected agent name to session ID short code
+                        expected_sub = expected_rc_session
+                        if expected_rc_session == "retrieval_agent":
+                            expected_sub = "ret"
+                        elif expected_rc_session == "scoring_agent":
+                            expected_sub = "scr"
+                        elif expected_rc_session == "conductor_agent":
+                            expected_sub = "con"
+                            
+                        # Find diagnosed node in expected session
+                        diagnosed_rc_node = "none"
+                        matched_s = next((s for s in res_chain["chain"] if expected_sub in s["session_id"]), None)
+                        if matched_s:
+                            diagnosed_rc_node = matched_s["root_cause_node"] or "none"
+                        is_correct = (expected_sub in root_cause_session and diagnosed_rc_node == expected_rc_node)
                         
-                if expected_rc == "ambiguous":
-                    is_correct = (diagnosed_rc == "none" and has_co_originator)
+                    # Chain-level end-to-end pass rate: passes if no session in the chain failed
+                    if root_cause_session == "none":
+                        passed_runs += 1
+                        
+                    diagnosed_count += 1
+                    if is_correct:
+                        correct_attributions += 1
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+        else:
+            traces = store.get_session_traces(session_id, user_id=user_id)
+            if not traces:
+                continue
+                
+            diagnosed = rc_engine.propagate_failures(traces)
+            
+            # Extract metrics
+            for node in diagnosed:
+                evidence = node["evidence"]
+                if "judge_mode" in evidence:
+                    eval_count += 1
+                    if evidence["judge_mode"] == "heuristic_fallback":
+                        heuristic_count += 1
+                if node["node_type"] == "generator" or node["node_id"] == "synthesizer":
+                    metrics_summary["instruction_following"].append(evidence["instruction_following"])
+                    if evidence["groundedness_ratio"] is not None:
+                        metrics_summary["hallucination_rate"].append(1.0 - evidence["groundedness_ratio"])
+                elif node["node_type"] == "retriever":
+                    if evidence["retriever_similarity"] is not None:
+                        metrics_summary["retrieval_quality"].append(evidence["retriever_similarity"])
+                elif node["node_type"] == "planner":
+                    # tool accuracy (1.0 if not check_order_history)
+                    tool_name = node.get("tool_name")
+                    acc = 0.0 if tool_name == "check_order_history" else 1.0
+                    metrics_summary["tool_accuracy"].append(acc)
+                    
+                metrics_summary["latency"].append(evidence["latency"])
+    
+            # Check attribution accuracy against ground truth in fixtures
+            try:
+                suffix = int(session_id.split("_")[-1])
+                if "retry" in fixtures_path:
+                    idx = suffix - 300
+                elif "branching" in fixtures_path:
+                    idx = suffix - 200
                 else:
-                    is_correct = (diagnosed_rc == expected_rc or diagnosed_rc_type == expected_rc)
-                        
-                has_failure = any(node.get("is_root_cause") or node.get("is_co_originator") for node in diagnosed)
-                if not has_failure:
-                    passed_runs += 1
-                        
-                diagnosed_count += 1
-                if is_correct:
-                    correct_attributions += 1
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            pass
+                    idx = suffix - 100
+                if 0 <= idx < len(fixtures):
+                    fixture = fixtures[idx]
+                    expected_rc = fixture["expected_root_cause"]
+                    
+                    # If version is fixed and case was resolved in fixed mode, expected root cause is none
+                    if version == "fixed" and fixture.get("resolved_in_fixed_mode"):
+                        expected_rc = "none"
+                    
+                    # Find diagnosed root cause node name and type
+                    diagnosed_rc = "none"
+                    diagnosed_rc_type = "none"
+                    has_co_originator = any(node.get("is_co_originator") for node in diagnosed)
+                    for node in diagnosed:
+                        if node.get("is_root_cause"):
+                            diagnosed_rc = node["node_id"]
+                            diagnosed_rc_type = node["node_type"]
+                            break
+                            
+                    if expected_rc == "ambiguous":
+                        is_correct = (diagnosed_rc == "none" and has_co_originator)
+                    else:
+                        is_correct = (diagnosed_rc == expected_rc or diagnosed_rc_type == expected_rc)
+                            
+                    has_failure = any(node.get("is_root_cause") or node.get("is_co_originator") for node in diagnosed)
+                    if not has_failure:
+                        passed_runs += 1
+                            
+                    diagnosed_count += 1
+                    if is_correct:
+                        correct_attributions += 1
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                pass
 
     # Calculate averages
     averages = {}
@@ -113,7 +203,9 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
         "averages": averages,
         "accuracy": accuracy,
         "pass_rate": pass_rate,
-        "total_runs": len(session_ids)
+        "total_runs": len(session_ids),
+        "eval_count": eval_count,
+        "heuristic_count": heuristic_count
     }
 
 
@@ -147,9 +239,12 @@ def main():
         sessions_b = [s for s in sessions if args.version_b in s]
         
         # Suffix filtering to prevent linear, branching, and retry runs from overlapping
-        if "retry" in args.fixtures:
-            sessions_a = [s for s in sessions_a if int(s.split("_")[-1]) >= 300]
-            sessions_b = [s for s in sessions_b if int(s.split("_")[-1]) >= 300]
+        if "multi_agent" in args.fixtures:
+            sessions_a = [s for s in sessions_a if "con" in s and int(s.split("_")[-1]) >= 400]
+            sessions_b = [s for s in sessions_b if "con" in s and int(s.split("_")[-1]) >= 400]
+        elif "retry" in args.fixtures:
+            sessions_a = [s for s in sessions_a if 300 <= int(s.split("_")[-1]) < 400]
+            sessions_b = [s for s in sessions_b if 300 <= int(s.split("_")[-1]) < 400]
         elif "branching" in args.fixtures:
             sessions_a = [s for s in sessions_a if 200 <= int(s.split("_")[-1]) < 300]
             sessions_b = [s for s in sessions_b if 200 <= int(s.split("_")[-1]) < 300]
@@ -169,8 +264,6 @@ def main():
 
         res_a = evaluate_runs(sessions_a, db_path, args.version_a, mode=args.mode, fixtures_path=args.fixtures)
         res_b = evaluate_runs(sessions_b, db_path, args.version_b, mode=args.mode, fixtures_path=args.fixtures)
-
-
 
         # Print comparison report
         print(f"\n================== REGRESSION REPORT ==================")
@@ -203,16 +296,20 @@ def main():
         print(f"-" * 70)
         
         # Display validated accuracy and pass rates
+        is_ma = "multi_agent" in args.fixtures
+        acc_label = "Root Cause Attribution Accuracy" if is_ma else "Calibration Holdout Root Cause Accuracy"
+        pass_label = "Chain-Level End-to-End Pass Rate" if is_ma else "Regression Pass Rate"
+        
         if res_a["accuracy"] is not None:
-            print(f"Calibration Holdout Root Cause Accuracy (vA): {res_a['accuracy']*100:.1f}%")
+            print(f"{acc_label} (vA): {res_a['accuracy']*100:.1f}%")
         else:
-            print("Calibration Holdout Root Cause Accuracy (vA): [UNCALIBRATED]")
+            print(f"{acc_label} (vA): [UNCALIBRATED]")
             
         if res_b["accuracy"] is not None:
-            print(f"Calibration Holdout Root Cause Accuracy (vB): {res_b['accuracy']*100:.1f}%")
+            print(f"{acc_label} (vB): {res_b['accuracy']*100:.1f}%")
             
-        print(f"Regression Pass Rate (vA): {res_a['pass_rate']*100:.1f}% ({int(round(res_a['pass_rate']*res_a['total_runs']))}/{res_a['total_runs']} runs passed)")
-        print(f"Regression Pass Rate (vB): {res_b['pass_rate']*100:.1f}% ({int(round(res_b['pass_rate']*res_b['total_runs']))}/{res_b['total_runs']} runs passed)")
+        print(f"{pass_label} (vA): {res_a['pass_rate']*100:.1f}% ({int(round(res_a['pass_rate']*res_a['total_runs']))}/{res_a['total_runs']} runs passed)")
+        print(f"{pass_label} (vB): {res_b['pass_rate']*100:.1f}% ({int(round(res_b['pass_rate']*res_b['total_runs']))}/{res_b['total_runs']} runs passed)")
 
 
             
@@ -277,6 +374,12 @@ def main():
             
         print(f"Overall Verdict: {verdict} (confidence: {confidence*100:.1f}%)")
         print(f"=======================================================")
+        
+        # Heuristic fallback warning
+        total_evals = res_a.get("eval_count", 0) + res_b.get("eval_count", 0)
+        total_heuristics = res_a.get("heuristic_count", 0) + res_b.get("heuristic_count", 0)
+        if total_heuristics > 0:
+            print(f"[WARNING] {total_heuristics}/{total_evals} evaluations used heuristic fallback due to cache misses. Results may not reflect live-judge accuracy.")
 
 
     else:

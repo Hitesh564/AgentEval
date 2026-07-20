@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
@@ -33,6 +33,14 @@ store = TraceStore(db_path=db_path)
 rc_engine = RootCauseEngine(db_path=db_path)
 rec_engine = RecommendationEngine()
 
+def get_current_user_id(x_api_key: Optional[str] = Header(None)) -> str:
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header is missing")
+    user_id = store.resolve_user_id(x_api_key)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return user_id
+
 class SessionSummary(BaseModel):
     session_id: str
     score: float
@@ -46,7 +54,7 @@ def health_check() -> Dict[str, Any]:
     return {"status": "ok", "service": "agenteval-server", "database_exists": os.path.exists(db_path)}
 
 @app.get("/api/sessions", response_model=List[SessionSummary])
-def list_sessions() -> List[SessionSummary]:
+def list_sessions(user_id: str = Depends(get_current_user_id)) -> List[SessionSummary]:
     """
     Returns list of all traced sessions for Screen 1 (Conversation List).
     Queries real session traces and computes actual failure classifications.
@@ -56,13 +64,13 @@ def list_sessions() -> List[SessionSummary]:
 
     # Get distinct session_ids
     conn = sqlite3.connect(db_path)
-    cursor = conn.execute("SELECT session_id, MIN(timestamp_start) as start_time FROM traces GROUP BY session_id ORDER BY start_time DESC")
+    cursor = conn.execute("SELECT session_id, MIN(timestamp_start) as start_time FROM traces WHERE user_id = ? GROUP BY session_id ORDER BY start_time DESC", (user_id,))
     sessions = cursor.fetchall()
     conn.close()
 
     summaries = []
     for session_id, timestamp in sessions:
-        nodes = store.get_session_traces(session_id)
+        nodes = store.get_session_traces(session_id, user_id=user_id)
         if not nodes:
             continue
             
@@ -90,12 +98,12 @@ def list_sessions() -> List[SessionSummary]:
     return summaries
 
 @app.get("/api/sessions/{session_id}/trace")
-def get_session_trace(session_id: str) -> Dict[str, Any]:
+def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     """
     Returns full node trace and root cause evaluation for Screen 2 (Trace Detail).
     Integrates evidence extraction and recommendations in real time.
     """
-    nodes = store.get_session_traces(session_id)
+    nodes = store.get_session_traces(session_id, user_id=user_id)
     if not nodes:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
         
@@ -158,8 +166,21 @@ def get_session_trace(session_id: str) -> Dict[str, Any]:
         "nodes": output_nodes
     }
 
+@app.get("/api/sessions/{session_id}/chain")
+def get_session_chain(session_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    """
+    Returns full linked chain for a session, each session's own overall health,
+    and the cross-session root-cause determination for Screen 4 (Chain Detail).
+    """
+    from agenteval.root_cause.cross_session import CrossSessionEngine
+    engine = CrossSessionEngine(db_path=db_path)
+    try:
+        return engine.diagnose_chain(session_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/benchmark/compare")
-def compare_versions() -> Dict[str, Any]:
+def compare_versions(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     """
     Returns benchmark comparison summary for Screen 3 (Benchmark/Regression Report).
     Calculates averages dynamically from the calibration session sets in SQLite.
@@ -168,7 +189,7 @@ def compare_versions() -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Database not found. Run agent calibration first.")
         
     conn = sqlite3.connect(db_path)
-    cursor = conn.execute("SELECT DISTINCT session_id FROM traces")
+    cursor = conn.execute("SELECT DISTINCT session_id FROM traces WHERE user_id = ?", (user_id,))
     sessions = [row[0] for row in cursor.fetchall()]
     conn.close()
     
@@ -186,8 +207,8 @@ def compare_versions() -> Dict[str, Any]:
         )
         
     # Import and run calculation logic
-    res_a = evaluate_runs(sessions_a, db_path, "calib")
-    res_b = evaluate_runs(sessions_b, db_path, "fixed")
+    res_a = evaluate_runs(sessions_a, db_path, "calib", user_id=user_id)
+    res_b = evaluate_runs(sessions_b, db_path, "fixed", user_id=user_id)
 
     
     # Determine dynamic overall verdict

@@ -113,3 +113,32 @@ Overall Verdict: Version B is BETTER (confidence: 76.5%)
 ```
 ![Dashboard Regression Report](assets/comparison_metrics.png)
 
+---
+
+## Scope & Live-Judge Validation Notes
+
+* **Single-Parent Chain Constraint**: The meta-graph walks transitive parent-child relationships where a session has at most one parent session.
+* **Rate Limits & API Quotas**: Live-judge validation for the multi-agent dataset was performed on the baseline (calib) version only (100% causal accuracy, 10 cases, gemini-3.1-flash-lite), due to free-tier API rate limits. The fixed version's comparison numbers are from replay/cached evaluation rather than a separate live run.
+
+## Phase 4 — Independent-Dataset Validation & Multi-User Support
+
+* **Multi-User Scoping**: Traces and session links are scoped to authenticated users via hashed SHA-256 tokens and database-level `WHERE user_id = :user_id` filtering.
+* **Explicitly Out of Scope for Multi-User**:
+  - Full production auth (e.g. passwords, OAuth, session token expiration).
+  - Role-based permissions (admin vs. regular user) or rate-limiting per user.
+  - UI for user management.
+* **Who&When Dataset Results**:
+  - **Dataset**: Converted 15 multi-agent cases from ICML 2025 Who&When dataset (`Kevin355/Who_and_When`).
+  - **Diagnostic Accuracy**: **0.0%** in replay mode (due to local heuristic fallback defaulting to healthy `1.0` on unseen logs, identifying no root cause).
+* **Validated Topologies**:
+  - Linear (RAG)
+  - Branching/Parallel (Router)
+  - Retries/Loops (Self-Correction)
+  - Multi-Agent Chains (Cross-Session)
+* **Remaining Known Limitations**:
+  - Framework-agnosticism (automatic callbacks are for LangGraph/LangChain; custom setups require manual tracing).
+  - No distributed tracing or database pooling.
+  - Session-level fan-in is constrained to single-parent chains at session boundaries.
+  - Recommendations are computed per-session based on node-level taxonomy only.
+
+

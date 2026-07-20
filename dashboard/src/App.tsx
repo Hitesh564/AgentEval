@@ -90,20 +90,24 @@ interface BenchmarkReport {
 }
 
 function App() {
+  const [apiKey, setApiKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'sessions' | 'benchmark'>('sessions');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
+  const [chainData, setChainData] = useState<any | null>(null);
   const [benchmark, setBenchmark] = useState<BenchmarkReport | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   // Load conversation list
   useEffect(() => {
-    if (activeTab === 'sessions' && !selectedSession) {
+    if (activeTab === 'sessions' && !selectedSession && apiKey) {
       setLoading(true);
       setError(null);
-      fetch(`${API_BASE}/api/sessions`)
+      fetch(`${API_BASE}/api/sessions`, {
+        headers: { "X-API-Key": apiKey }
+      })
         .then(res => {
           if (!res.ok) throw new Error("Failed to load sessions");
           return res.json();
@@ -117,14 +121,16 @@ function App() {
           setLoading(false);
         });
     }
-  }, [activeTab, selectedSession]);
+  }, [activeTab, selectedSession, apiKey]);
 
   // Load session trace detail
   useEffect(() => {
-    if (selectedSession) {
+    if (selectedSession && apiKey) {
       setLoading(true);
       setError(null);
-      fetch(`${API_BASE}/api/sessions/${selectedSession}/trace`)
+      fetch(`${API_BASE}/api/sessions/${selectedSession}/trace`, {
+        headers: { "X-API-Key": apiKey }
+      })
         .then(res => {
           if (!res.ok) throw new Error("Failed to load trace details");
           return res.json();
@@ -140,14 +146,41 @@ function App() {
     } else {
       setSessionDetail(null);
     }
-  }, [selectedSession]);
+  }, [selectedSession, apiKey]);
+
+  // Load session chain detail (Screen 4)
+  useEffect(() => {
+    if (selectedSession && apiKey) {
+      fetch(`${API_BASE}/api/sessions/${selectedSession}/chain`, {
+        headers: { "X-API-Key": apiKey }
+      })
+        .then(res => {
+          if (!res.ok) throw new Error("Failed to load chain details");
+          return res.json();
+        })
+        .then(data => {
+          if (data && data.chain && data.chain.length > 1) {
+            setChainData(data);
+          } else {
+            setChainData(null);
+          }
+        })
+        .catch(() => {
+          setChainData(null);
+        });
+    } else {
+      setChainData(null);
+    }
+  }, [selectedSession, apiKey]);
 
   // Load benchmark comparison report
   useEffect(() => {
-    if (activeTab === 'benchmark') {
+    if (activeTab === 'benchmark' && apiKey) {
       setLoading(true);
       setError(null);
-      fetch(`${API_BASE}/api/benchmark/compare`)
+      fetch(`${API_BASE}/api/benchmark/compare`, {
+        headers: { "X-API-Key": apiKey }
+      })
         .then(res => {
           if (!res.ok) {
             return res.json().then(data => {
@@ -165,7 +198,39 @@ function App() {
           setLoading(false);
         });
     }
-  }, [activeTab]);
+  }, [activeTab, apiKey]);
+
+  if (!apiKey) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif' }}>
+        <div style={{ background: '#1e293b', padding: '2.5rem', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.3)', width: '380px', textAlign: 'center' }}>
+          <h2 style={{ marginTop: 0, marginBottom: '0.5rem', fontSize: '1.5rem', fontWeight: 700 }}>AgentEval Dashboard</h2>
+          <p style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '2rem' }}>Authenticate to view isolated conversation traces</p>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const val = (e.currentTarget.elements.namedItem('api_key') as HTMLInputElement).value;
+            if (val.trim()) {
+              setApiKey(val.trim());
+            }
+          }}>
+            <input 
+              type="password" 
+              name="api_key" 
+              placeholder="Enter your API Key..." 
+              required
+              style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: '6px', border: '1px solid #475569', background: '#0f172a', color: '#f8fafc', marginBottom: '1.5rem', boxSizing: 'border-box', outline: 'none', transition: 'border-color 0.2s' }}
+            />
+            <button 
+              type="submit" 
+              style={{ width: '100%', padding: '0.75rem', borderRadius: '6px', border: 'none', background: '#3b82f6', color: '#f8fafc', fontWeight: 600, cursor: 'pointer', transition: 'background-color 0.2s' }}
+            >
+              Access Dashboard
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   const formatDate = (isoStr: string) => {
     try {
@@ -321,6 +386,102 @@ function App() {
               </div>
             </div>
           </div>
+
+          {chainData && (
+            <div className="glass-card" style={{ padding: '1.25rem', marginBottom: '1.5rem', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                <Activity size={18} color="var(--color-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Cross-Agent Collaboration Chain (Screen 4)</h3>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', position: 'relative' }}>
+                {chainData.chain.map((step: any, idx: number) => {
+                  const isCurrent = step.session_id === selectedSession;
+                  const agentType = step.session_id.includes('_ret_') ? 'Retrieval Agent' : 
+                                    step.session_id.includes('_scr_') ? 'Scoring Agent' : 
+                                    step.session_id.includes('_con_') ? 'Conductor Agent' : 'Agent Session';
+                                    
+                  let badgeColor = 'var(--color-success)';
+                  let badgeBg = 'rgba(16, 185, 129, 0.1)';
+                  let statusText = 'Healthy';
+                  
+                  if (step.status === 'root-cause') {
+                    badgeColor = 'var(--color-danger)';
+                    badgeBg = 'rgba(239, 68, 68, 0.1)';
+                    statusText = 'Root Cause';
+                  } else if (step.status === 'co-contributor') {
+                    badgeColor = 'var(--color-warning)';
+                    badgeBg = 'rgba(245, 158, 11, 0.1)';
+                    statusText = 'Co-Contributor';
+                  } else if (step.status === 'inherited') {
+                    badgeColor = 'var(--color-warning)';
+                    badgeBg = 'rgba(245, 158, 11, 0.1)';
+                    statusText = 'Inherited Failure';
+                  }
+                  
+                  return (
+                    <div 
+                      key={step.session_id} 
+                      style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}
+                    >
+                      <div 
+                        onClick={() => setSelectedSession(step.session_id)}
+                        style={{
+                          padding: '1rem 1.25rem',
+                          background: isCurrent ? 'rgba(59, 130, 246, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                          border: isCurrent ? '2px solid var(--color-primary)' : '1px solid rgba(255, 255, 255, 0.08)',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          minWidth: '220px',
+                          boxShadow: isCurrent ? '0 0 12px rgba(59, 130, 246, 0.3)' : 'none',
+                          transition: 'all 0.2s ease-in-out',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isCurrent) e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isCurrent) e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem', color: isCurrent ? 'var(--color-primary)' : 'var(--text-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>{agentType}</span>
+                          <span style={{ fontSize: '0.85rem', color: step.overall_score >= 0.70 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                            {step.overall_score.toFixed(2)}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', fontFamily: 'monospace' }}>
+                          {step.session_id}
+                        </div>
+                        <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            padding: '0.2rem 0.5rem',
+                            borderRadius: '4px',
+                            backgroundColor: badgeBg,
+                            color: badgeColor,
+                            border: `1px solid ${badgeColor}33`
+                          }}>
+                            {statusText}
+                          </span>
+                          {step.root_cause_node && (
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              Node: {step.root_cause_node}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {idx < chainData.chain.length - 1 && (
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <ChevronRight size={24} color="var(--text-muted)" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="grid-2">
             {/* Visual Causal Chain Flow */}

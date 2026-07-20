@@ -57,6 +57,11 @@ def get_llm_response(prompt: str, system_prompt: Optional[str] = None) -> Option
         
     import time
     try:
+        # Preemptive request pacing (delay between consecutive LLM calls to prevent rate limits)
+        pacing_sec = float(os.environ.get("AGENTEVAL_REQUEST_PACING_SEC", "4.0"))
+        if pacing_sec > 0:
+            time.sleep(pacing_sec)
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
