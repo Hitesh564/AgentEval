@@ -142,8 +142,11 @@ agenteval compare calib fixed --fixtures examples/fixtures/multi_agent_test_case
 - **Multi-Agent Chains**: Session-level coordinator and worker hierarchies.
 
 ### Diagnostic Causal Accuracy
-- **Internal Holdouts (Single/Multi-Agent)**: **100.0%** (validated against hand-labeled error injections).
-- **Who&When Independent Dataset**: **0.0%** in replay mode due to heuristic fallback (expected baseline for unseen logs under keyword heuristics without live Gemini LLM judges).
+- **Internal Holdouts (Single/Multi-Agent)**: **100.0%**
+- **Who&When Dataset Results**:
+  - **Dataset**: Converted 15 multi-agent cases from ICML 2025 Who&When dataset (`Kevin355/Who_and_When`).
+  - **Diagnostic Accuracy**: **33.3%** in live-judge mode (using `gemini-3.1-flash-lite` over 15 cases; 100% correct when `Orchestrator` is the ground truth culprit, but misattributes worker errors upstream to the parent orchestrator).
+  - **Replay Accuracy**: **0.0%** (due to local heuristic fallback defaulting to healthy `1.0` on unseen logs).
 
 ### Multi-User Scope Constraints
 - **In-Scope**: API-key HTTP headers, SHA-256 hashed keys in SQL, and query isolation scoping on traces and session links.

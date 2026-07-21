@@ -12,13 +12,26 @@ def main():
     parser.add_argument("--cases", type=int, default=15, help="Number of cases to evaluate (default 15)")
     parser.add_argument("--db-path", default="agenteval.db", help="Path to SQLite database")
     parser.add_argument("--mode", default="replay", choices=["replay", "live"], help="Evaluation mode (replay or live)")
+    parser.add_argument("--batch", type=int, choices=[1, 2, 3], help="Batch index to run (1, 2, or 3, each containing 5 cases)")
     args = parser.parse_args()
 
     # Load dataset
     print(f"Loading Who&When dataset (Hand-Crafted)...")
     dataset = load_dataset("Kevin355/Who_and_When", "Hand-Crafted")
     train_split = dataset["train"]
-    limit = min(len(train_split), args.cases)
+
+    # Determine slice of train_split to run
+    if args.batch:
+        start_idx = (args.batch - 1) * 5
+        end_idx = start_idx + 5
+        print(f"Running Batch {args.batch} (cases {start_idx} to {end_idx-1})")
+    else:
+        start_idx = 0
+        end_idx = args.cases
+        print(f"Running all {args.cases} cases")
+
+    limit = min(len(train_split), end_idx)
+    run_indices = range(start_idx, limit)
 
     store = TraceStore(db_path=args.db_path)
     
@@ -27,18 +40,21 @@ def main():
     api_key = "who_when_secret_key"
     store.create_user(user_id, api_key)
     
-    print(f"Ingesting {limit} cases into '{args.db_path}' under user '{user_id}'...")
+    print(f"Ingesting {len(run_indices)} cases into '{args.db_path}' under user '{user_id}'...")
     
-    # Clean old traces for who_when_user
+    # Clean old traces for current batch cases only
     conn = sqlite3.connect(args.db_path)
-    conn.execute("DELETE FROM traces WHERE user_id = ?", (user_id,))
-    conn.execute("DELETE FROM session_links WHERE user_id = ?", (user_id,))
+    for idx in run_indices:
+        item = train_split[idx]
+        q_id = item["question_ID"]
+        conn.execute("DELETE FROM traces WHERE user_id = ? AND session_id LIKE ?", (user_id, f"session_{q_id}_%"))
+        conn.execute("DELETE FROM session_links WHERE user_id = ? AND (child_session_id LIKE ? OR parent_session_id LIKE ?)", (user_id, f"session_{q_id}_%", f"session_{q_id}_%"))
     conn.commit()
     conn.close()
 
     cases_data = []
     
-    for idx in range(limit):
+    for idx in run_indices:
         item = train_split[idx]
         q_id = item["question_ID"]
         history = item["history"]
@@ -115,10 +131,10 @@ def main():
     cross_engine = CrossSessionEngine(db_path=args.db_path, mode=args.mode)
     
     correct_count = 0
-    total_evaluated = len(cases_data)
+    evaluated_cases = 0
     
     print("\n================== WHO&WHEN EVALUATION REPORT ==================")
-    print(f"Mode: {args.mode.upper()} | Evaluated Cases: {total_evaluated}")
+    print(f"Mode: {args.mode.upper()} | Targeted Cases: {len(cases_data)}")
     print("-" * 80)
     
     for case in cases_data:
@@ -126,29 +142,38 @@ def main():
         # The primary root coordinator session is orchestrator
         start_session = f"session_{q_id}_orchestrator"
         
-        # Diagnose
-        res = cross_engine.diagnose_chain(start_session, user_id=user_id)
-        diagnosed_rc = res["root_cause_session"]
-        
-        # Expected root cause session name/ID
-        expected_agent = case["mistake_agent"].lower()
-        
-        # Check correctness
-        is_correct = False
-        if expected_agent in diagnosed_rc.lower():
-            is_correct = True
+        try:
+            # Diagnose
+            res = cross_engine.diagnose_chain(start_session, user_id=user_id)
+            diagnosed_rc = res["root_cause_session"]
             
-        if is_correct:
-            correct_count += 1
-            status = "CORRECT"
-        else:
-            status = "INCORRECT"
+            # Expected root cause session name/ID
+            expected_agent = case["mistake_agent"].lower()
             
-        print(f"Case ID: {q_id[:8]}... | Expected Agent: {case['mistake_agent']:<15} | Diagnosed: {diagnosed_rc:<35} | Verdict: {status}")
+            # Check correctness
+            is_correct = False
+            if expected_agent in diagnosed_rc.lower():
+                is_correct = True
+                
+            if is_correct:
+                correct_count += 1
+                status = "CORRECT"
+            else:
+                status = "INCORRECT"
+                
+            print(f"Case ID: {q_id[:8]}... | Expected Agent: {case['mistake_agent']:<15} | Diagnosed: {diagnosed_rc:<35} | Verdict: {status}")
+            evaluated_cases += 1
+        except Exception as e:
+            print(f"\n[ERROR] Failed to evaluate case {q_id[:8]}...: {str(e)}")
+            if "RateLimitError" in str(type(e)) or "rate limit" in str(e).lower() or "429" in str(e):
+                print("[WARNING] LLM Rate Limit/Quota Exceeded. Stopping evaluation early to preserve partial results.")
+                break
+            else:
+                raise e
         
-    accuracy = (correct_count / total_evaluated) if total_evaluated > 0 else 0.0
+    accuracy = (correct_count / evaluated_cases) if evaluated_cases > 0 else 0.0
     print("-" * 80)
-    print(f"Causal Attribution Accuracy: {accuracy*100:.1f}% ({correct_count}/{total_evaluated} correct)")
+    print(f"Causal Attribution Accuracy: {accuracy*100:.1f}% ({correct_count}/{evaluated_cases} correct on successfully evaluated cases)")
     print("=================================================================")
 
 if __name__ == "__main__":
