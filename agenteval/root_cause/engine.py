@@ -29,100 +29,107 @@ class RootCauseEngine:
             "latency": 0.0,
             "json_valid": 1.0,
             "instruction_following": 1.0,
-            "judge_mode": "deterministic"
+            "judge_mode": "deterministic",
+            "retrieval_evidence": None,
+            "groundedness_evidence": None,
+            "tool_evidence": None,
+            "latency_evidence": None,
         }
-        
+        inputs = node.get("inputs") or {}
+        outputs = node.get("outputs") or {}
+        output_text = ""
+        if isinstance(outputs, dict):
+            output_text = outputs.get("response") or outputs.get("plan") or outputs.get("content") or ""
+        else:
+            output_text = str(outputs)
+
+        query = inputs.get("query") or inputs.get("q") or inputs.get("question") or node.get("query", "")
+
         # 1. Latency evidence
-        evidence["latency"] = self.eval_engine.evaluate_latency(
-            node["timestamp_start"], 
-            node["timestamp_end"]
-        )
-        
+        if node.get("timestamp_start") and node.get("timestamp_end"):
+            evidence["latency"] = self.eval_engine.evaluate_latency(
+                node["timestamp_start"],
+                node["timestamp_end"]
+            )
+            evidence["latency_evidence"] = {
+                "value": evidence["latency"],
+                "status": "complete",
+                "method": "latency",
+            }
+
         # 2. Retrieval similarity evidence
-        docs = node.get("retrieved_docs")
+        docs = node.get("retrieved_docs") or []
         if docs:
-            similarities = [doc.get("similarity_score", 0.0) for doc in docs if "similarity_score" in doc]
-            if similarities:
-                evidence["retriever_similarity"] = sum(similarities) / len(similarities)
-                
-        # 3. Tool margin evidence & Planner instruction following
+            query_embedding = inputs.get("query_embedding") or inputs.get("embedding")
+            retrieval_res = self.eval_engine.evaluate_retrieval_evidence(
+                str(query) if query is not None else None,
+                docs,
+                query_embedding=query_embedding,
+            )
+            evidence["retrieval_evidence"] = retrieval_res
+            if retrieval_res.get("score") is not None:
+                evidence["retriever_similarity"] = retrieval_res["score"]
+            if retrieval_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
+                evidence["judge_mode"] = retrieval_res["judge_mode"]
+
+        # 3. Tool evidence and planner instruction following
         if node["node_type"] == "planner":
-            tool_name = node.get("tool_name")
-            if tool_name == "check_order_history":
-                # Simulated margin indicating tool selection ambiguity
-                evidence["tool_margin"] = 0.03
-            else:
-                evidence["tool_margin"] = 0.25
-                
-            # Planner instruction following evaluation
-            inputs = node.get("inputs") or {}
-            outputs = node.get("outputs") or {}
-            output_text = ""
-            if isinstance(outputs, dict):
-                output_text = outputs.get("plan") or node.get("plan", "") or ""
-            else:
-                output_text = str(outputs)
-                
-            query = inputs.get("query") or node.get("query", "")
-            if "eligibility" in str(query).lower() or "qualify" in str(query).lower() or "eligible" in str(query).lower():
-                system_prompt = "Plan order cancellation and eligibility refund check"
-            else:
-                system_prompt = f"Plan task execution for query: {query}"
+            tool_calls = node.get("tool_calls") or []
+            candidate_tools = []
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if isinstance(tc, dict) and tc.get("name"):
+                        candidate_tools.append(tc["name"])
 
-            
+            tool_res = self.eval_engine.evaluate_tool_selection(
+                node.get("tool_name"),
+                candidate_tools=candidate_tools or None,
+                expected_tool=node.get("expected_tool"),
+                tool_descriptions=node.get("tool_descriptions"),
+            )
+            evidence["tool_evidence"] = tool_res
+            if tool_res.get("margin") is not None:
+                evidence["tool_margin"] = tool_res["margin"]
+
+            system_prompt = f"Plan task execution for query: {query}"
             inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
-            evidence["instruction_following"] = inst_res["score"]
-            if inst_res.get("judge_mode") == "llm":
-                evidence["judge_mode"] = "llm"
+            evidence["instruction_following"] = inst_res.get("score", evidence["instruction_following"])
+            if inst_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
+                evidence["judge_mode"] = inst_res["judge_mode"]
 
-                
-        # 4. Groundedness and Instruction following evidence (eval judges)
-        # Check generator node output
+        # 4. Groundedness and instruction-following evidence for generators
         if (node["node_type"] == "generator" or node["node_id"] == "synthesizer") and session_traces:
-            inputs = node.get("inputs", {})
-            outputs = node.get("outputs", {})
-            
-            # Retrieve documents from the retriever nodes in this session
             ret_nodes = [n for n in session_traces if n["node_type"] == "retriever"]
-            docs = []
+            all_docs = []
             for r in ret_nodes:
                 r_docs = r.get("retrieved_docs") or []
                 if isinstance(r_docs, list):
-                    docs.extend(r_docs)
-            
-            # JSON validity
-            output_text = str(outputs) if outputs else ""
-            if isinstance(outputs, dict) and "response" in outputs:
-                output_text = str(outputs["response"])
-            
+                    all_docs.extend(r_docs)
+
             stripped = output_text.strip()
             if stripped.startswith("{") or stripped.startswith("["):
                 evidence["json_valid"] = self.eval_engine.evaluate_json_validity(output_text)
-            else:
-                evidence["json_valid"] = 1.0
 
-            
-            # Groundedness evaluation
-            if docs:
-                g_res = self.eval_engine.evaluate_groundedness(output_text, docs)
-                evidence["groundedness_ratio"] = g_res["score"]
-                evidence["judge_mode"] = g_res["judge_mode"]
-                
-            # Instruction following evaluation
-            q_val = inputs.get("query") or inputs.get("q") or ""
+            grounded_res = self.eval_engine.evaluate_groundedness(output_text, all_docs)
+            evidence["groundedness_evidence"] = grounded_res
+            if grounded_res.get("score") is not None:
+                evidence["groundedness_ratio"] = grounded_res["score"]
+            if grounded_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
+                evidence["judge_mode"] = grounded_res["judge_mode"]
+
+            q_val = query or ""
             system_prompt = f"Answer queries correctly. Query: {q_val}"
             inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
-            evidence["instruction_following"] = inst_res["score"]
-            if inst_res["judge_mode"] in ("llm", "cached_llm", "heuristic_fallback"):
-                if evidence.get("judge_mode") not in ("llm", "cached_llm"):
-                    evidence["judge_mode"] = inst_res["judge_mode"]
+            evidence["instruction_following"] = inst_res.get("score", evidence["instruction_following"])
+            if inst_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
+                evidence["judge_mode"] = inst_res["judge_mode"]
 
         # 5. Critic correctness evaluation
         if node["node_type"] == "critic" and session_traces:
             gen_nodes = [n for n in session_traces if n["node_type"] == "generator" or n["node_id"] == "synthesizer"]
             gen_node = gen_nodes[-1] if gen_nodes else None
             ret_nodes = [n for n in session_traces if n["node_type"] == "retriever"]
-            
+
             gen_output = ""
             if gen_node:
                 gen_outputs = gen_node.get("outputs") or {}
@@ -130,36 +137,38 @@ class RootCauseEngine:
                     gen_output = gen_outputs.get("response") or gen_node.get("response", "")
                 else:
                     gen_output = str(gen_outputs)
-                    
+
             docs = []
             for r in ret_nodes:
                 r_docs = r.get("retrieved_docs") or []
                 if isinstance(r_docs, list):
                     docs.extend(r_docs)
-            
-            g_ratio = 1.0
+
+            g_ratio = None
             if gen_output and docs:
                 g_res = self.eval_engine.evaluate_groundedness(gen_output, docs)
-                g_ratio = g_res["score"]
-                if g_res.get("judge_mode") == "llm":
-                    evidence["judge_mode"] = "llm"
-                
+                evidence["groundedness_evidence"] = g_res
+                g_ratio = g_res.get("score")
+                if g_ratio is not None:
+                    evidence["groundedness_ratio"] = g_ratio
+                if g_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
+                    evidence["judge_mode"] = g_res["judge_mode"]
+
             outputs = node.get("outputs") or {}
             feedback = ""
             if isinstance(outputs, dict):
                 feedback = outputs.get("critic_feedback") or node.get("critic_feedback", "")
             else:
                 feedback = str(outputs)
-                
+
             is_pass = "pass" in str(feedback).lower()
             is_fail = "fail" in str(feedback).lower()
-            
-            if g_ratio < 0.50:
-                # Generator hallucinated -> Critic must reject (Fail)
-                evidence["critic_correctness"] = 0.0 if is_pass else 1.0
-            else:
-                # Generator correct -> Critic must approve (Pass)
-                evidence["critic_correctness"] = 0.0 if is_fail else 1.0
+
+            if g_ratio is not None:
+                if g_ratio < 0.50:
+                    evidence["critic_correctness"] = 0.0 if is_pass else 1.0
+                else:
+                    evidence["critic_correctness"] = 0.0 if is_fail else 1.0
                 
         return evidence
 
@@ -181,8 +190,12 @@ class RootCauseEngine:
             
         # 3. Tool health
         margin = evidence["tool_margin"]
-        if margin is not None and node["node_type"] == "planner":
-            sub_healths["tool_selection"] = min(1.0, max(0.0, margin / 0.20))
+        tool_evidence = evidence.get("tool_evidence") or {}
+        if node["node_type"] == "planner":
+            if tool_evidence.get("score") is not None:
+                sub_healths["tool_selection"] = float(tool_evidence["score"])
+            elif margin is not None:
+                sub_healths["tool_selection"] = min(1.0, max(0.0, margin / 0.20))
             
         # 4. Groundedness health
         g_ratio = evidence["groundedness_ratio"]

@@ -166,6 +166,8 @@ def test_backward_compatibility_empty_links():
 
 def test_cumulative_cost_guard_halting(monkeypatch):
     """Validates that the cost guard halts LLM calls across sessions once the limit is breached."""
+    if metrics.litellm is None:
+        pytest.skip("litellm is not installed in this environment")
     # Reset cost and set env keys
     metrics.CUMULATIVE_COST = 0.0
     monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")

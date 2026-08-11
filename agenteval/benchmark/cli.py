@@ -33,6 +33,31 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
     fixtures = load_fixtures(fixtures_path)
     eval_count = 0
     heuristic_count = 0
+
+    def _metric_value(node: Dict[str, Any], evidence: Dict[str, Any], key: str) -> Optional[float]:
+        if key == "instruction_following":
+            value = evidence.get("instruction_following")
+            return float(value) if value is not None else None
+        if key == "hallucination_rate":
+            grounded = evidence.get("groundedness_evidence") or {}
+            score = grounded.get("score")
+            if score is None:
+                score = evidence.get("groundedness_ratio")
+            return (1.0 - float(score)) if score is not None else None
+        if key == "retrieval_quality":
+            retrieval = evidence.get("retrieval_evidence") or {}
+            score = retrieval.get("score")
+            if score is None:
+                score = evidence.get("retriever_similarity")
+            return float(score) if score is not None else None
+        if key == "tool_accuracy":
+            tool = evidence.get("tool_evidence") or {}
+            score = tool.get("score")
+            return float(score) if score is not None else None
+        if key == "latency":
+            value = evidence.get("latency")
+            return float(value) if value is not None else None
+        return None
     
     is_multi_agent = "multi_agent" in fixtures_path
     if is_multi_agent:
@@ -54,20 +79,23 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
                     evidence = node["evidence"]
                     if "judge_mode" in evidence:
                         eval_count += 1
-                        if evidence["judge_mode"] == "heuristic_fallback":
+                        if evidence["judge_mode"] in ("heuristic_fallback", "fallback"):
                             heuristic_count += 1
                     if node["node_type"] == "generator" or node["node_id"] in ("synthesizer", "scoring_generator", "conductor_generator"):
-                        if evidence.get("instruction_following") is not None:
-                            metrics_summary["instruction_following"].append(evidence["instruction_following"])
-                        if evidence.get("groundedness_ratio") is not None:
-                            metrics_summary["hallucination_rate"].append(1.0 - evidence["groundedness_ratio"])
+                        instruction = _metric_value(node, evidence, "instruction_following")
+                        hallucination = _metric_value(node, evidence, "hallucination_rate")
+                        if instruction is not None:
+                            metrics_summary["instruction_following"].append(instruction)
+                        if hallucination is not None:
+                            metrics_summary["hallucination_rate"].append(hallucination)
                     elif node["node_type"] == "retriever" or node["node_id"] in ("retrieval_retriever", "scoring_retriever"):
-                        if evidence.get("retriever_similarity") is not None:
-                            metrics_summary["retrieval_quality"].append(evidence["retriever_similarity"])
+                        retrieval = _metric_value(node, evidence, "retrieval_quality")
+                        if retrieval is not None:
+                            metrics_summary["retrieval_quality"].append(retrieval)
                     elif node["node_type"] == "planner":
-                        tool_name = node.get("tool_name")
-                        acc = 0.0 if tool_name == "check_order_history" else 1.0
-                        metrics_summary["tool_accuracy"].append(acc)
+                        tool = _metric_value(node, evidence, "tool_accuracy")
+                        if tool is not None:
+                            metrics_summary["tool_accuracy"].append(tool)
                     metrics_summary["latency"].append(evidence["latency"])
             
             # Check correctness against expected root cause session and node in fixtures
@@ -130,20 +158,23 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
                 evidence = node["evidence"]
                 if "judge_mode" in evidence:
                     eval_count += 1
-                    if evidence["judge_mode"] == "heuristic_fallback":
+                    if evidence["judge_mode"] in ("heuristic_fallback", "fallback"):
                         heuristic_count += 1
                 if node["node_type"] == "generator" or node["node_id"] == "synthesizer":
-                    metrics_summary["instruction_following"].append(evidence["instruction_following"])
-                    if evidence["groundedness_ratio"] is not None:
-                        metrics_summary["hallucination_rate"].append(1.0 - evidence["groundedness_ratio"])
+                    instruction = _metric_value(node, evidence, "instruction_following")
+                    hallucination = _metric_value(node, evidence, "hallucination_rate")
+                    if instruction is not None:
+                        metrics_summary["instruction_following"].append(instruction)
+                    if hallucination is not None:
+                        metrics_summary["hallucination_rate"].append(hallucination)
                 elif node["node_type"] == "retriever":
-                    if evidence["retriever_similarity"] is not None:
-                        metrics_summary["retrieval_quality"].append(evidence["retriever_similarity"])
+                    retrieval = _metric_value(node, evidence, "retrieval_quality")
+                    if retrieval is not None:
+                        metrics_summary["retrieval_quality"].append(retrieval)
                 elif node["node_type"] == "planner":
-                    # tool accuracy (1.0 if not check_order_history)
-                    tool_name = node.get("tool_name")
-                    acc = 0.0 if tool_name == "check_order_history" else 1.0
-                    metrics_summary["tool_accuracy"].append(acc)
+                    tool = _metric_value(node, evidence, "tool_accuracy")
+                    if tool is not None:
+                        metrics_summary["tool_accuracy"].append(tool)
                     
                 metrics_summary["latency"].append(evidence["latency"])
     
