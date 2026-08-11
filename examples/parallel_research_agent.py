@@ -213,48 +213,8 @@ def run_calibration_dataset(db_path: str = "agenteval.db", fixtures_path: str = 
         
         agent.invoke(state_input, config=config)
         
-        # 1. Force parallel parent-child relationships in the SQLite database
-        # 2. Merge retrieved docs lists from both retrievers to be present on the synthesizer node
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        try:
-            with conn:
-                conn.execute(
-                    "UPDATE traces SET parent_node_ids = '[\"planner\"]' WHERE session_id = ? AND node_id IN ('policy_retriever', 'product_retriever')",
-                    (session_id,)
-                )
-                conn.execute(
-                    "UPDATE traces SET parent_node_ids = '[\"policy_retriever\", \"product_retriever\"]' WHERE session_id = ? AND node_id = 'synthesizer'",
-                    (session_id,)
-                )
-                conn.execute(
-                    "UPDATE traces SET parent_node_ids = '[\"synthesizer\"]' WHERE session_id = ? AND node_id = 'critic'",
-                    (session_id,)
-                )
-                
-                # Fetch retrieved docs from retrievers and attach to synthesizer for metric validation
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT retrieved_docs FROM traces WHERE session_id = ? AND node_id IN ('policy_retriever', 'product_retriever')",
-                    (session_id,)
-                )
-                rows = cursor.fetchall()
-                merged_docs = []
-                for row in rows:
-                    if row[0]:
-                        try:
-                            docs_list = json.loads(row[0])
-                            if isinstance(docs_list, list):
-                                merged_docs.extend(docs_list)
-                        except Exception:
-                            pass
-                
-                conn.execute(
-                    "UPDATE traces SET retrieved_docs = ? WHERE session_id = ? AND node_id = 'synthesizer'",
-                    (json.dumps(merged_docs), session_id)
-                )
-        finally:
-            conn.close()
+        # Update parallel parent-child relationships and merge retrieved docs in storage
+        handler.store.update_branching_topology(session_id)
                 
         print("-" * 50)
         
@@ -262,7 +222,7 @@ def run_calibration_dataset(db_path: str = "agenteval.db", fixtures_path: str = 
     print(f"Triggering evaluation runs for version '{version}' (mode: {mode})...")
     from agenteval.benchmark.cli import evaluate_runs
     sessions = [f"session_{version}_{200 + i}" for i in range(len(fixtures))]
-    res = evaluate_runs(sessions, db_path, version, mode=mode, fixtures_path=args.fixtures)
+    res = evaluate_runs(sessions, db_path, version, mode=mode, fixtures_path=fixtures_path)
     print(f"Evaluation results for '{version}': Pass rate: {res.get('pass_rate', 0)*100:.1f}%, Causal Accuracy: {res.get('accuracy', 0)*100:.1f}%" if res.get('accuracy') is not None else f"Evaluation results for '{version}': Pass rate: {res.get('pass_rate', 0)*100:.1f}%")
 
 if __name__ == "__main__":

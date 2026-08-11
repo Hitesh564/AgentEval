@@ -16,6 +16,9 @@ def setup_db():
         os.remove(TEST_DB)
         
     store = TraceStore(db_path=TEST_DB)
+    store.clear_user_data("alice")
+    store.clear_user_data("bob")
+    
     # Register Alice and Bob
     store.create_user("alice", "alice_secret_key_123")
     store.create_user("bob", "bob_secret_key_456")
@@ -31,6 +34,9 @@ def setup_db():
     yield
     
     # Restore original config
+    store.clear_user_data("alice")
+    store.clear_user_data("bob")
+    store.close()
     main_mod.db_path = orig_db
     main_mod.store = orig_store
     if os.path.exists(TEST_DB):

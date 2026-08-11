@@ -1,4 +1,5 @@
 import os
+import time
 import sqlite3
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +49,34 @@ class SessionSummary(BaseModel):
     failure_tag: Optional[str] = None
     timestamp: str
 
+# In-memory response cache for expensive aggregate endpoints
+RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {
+    "sessions": {}, # user_id -> (timestamp, data)
+    "compare": {},  # user_id -> (timestamp, data)
+}
+CACHE_TTL_SECONDS = 300 # 5 minutes TTL
+
+def get_cached_response(cache_type: str, user_id: str) -> Optional[Any]:
+    entry = RESPONSE_CACHE.get(cache_type, {}).get(user_id)
+    if entry:
+        ts, data = entry
+        if time.time() - ts < CACHE_TTL_SECONDS:
+            return data
+    return None
+
+def set_cached_response(cache_type: str, user_id: str, data: Any):
+    if cache_type not in RESPONSE_CACHE:
+        RESPONSE_CACHE[cache_type] = {}
+    RESPONSE_CACHE[cache_type][user_id] = (time.time(), data)
+
+def invalidate_response_cache(user_id: Optional[str] = None):
+    if user_id:
+        RESPONSE_CACHE["sessions"].pop(user_id, None)
+        RESPONSE_CACHE["compare"].pop(user_id, None)
+    else:
+        RESPONSE_CACHE["sessions"].clear()
+        RESPONSE_CACHE["compare"].clear()
+
 @app.get("/api/health")
 def health_check() -> Dict[str, Any]:
     """Basic health check endpoint."""
@@ -59,17 +88,15 @@ def list_sessions(user_id: str = Depends(get_current_user_id)) -> List[SessionSu
     Returns list of all traced sessions for Screen 1 (Conversation List).
     Queries real session traces and computes actual failure classifications.
     """
-    if not os.path.exists(db_path):
-        return []
+    cached = get_cached_response("sessions", user_id)
+    if cached is not None:
+        return cached
 
-    # Get distinct session_ids
-    conn = sqlite3.connect(db_path)
-    cursor = conn.execute("SELECT session_id, MIN(timestamp_start) as start_time FROM traces WHERE user_id = ? GROUP BY session_id ORDER BY start_time DESC", (user_id,))
-    sessions = cursor.fetchall()
-    conn.close()
-
+    sessions_info = store.list_session_summaries(user_id=user_id)
     summaries = []
-    for session_id, timestamp in sessions:
+    for info in sessions_info:
+        session_id = info["session_id"]
+        timestamp = info["start_time"]
         nodes = store.get_session_traces(session_id, user_id=user_id)
         if not nodes:
             continue
@@ -95,6 +122,7 @@ def list_sessions(user_id: str = Depends(get_current_user_id)) -> List[SessionSu
             timestamp=timestamp
         ))
         
+    set_cached_response("sessions", user_id, summaries)
     return summaries
 
 @app.get("/api/sessions/{session_id}/trace")
@@ -183,15 +211,13 @@ def get_session_chain(session_id: str, user_id: str = Depends(get_current_user_i
 def compare_versions(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     """
     Returns benchmark comparison summary for Screen 3 (Benchmark/Regression Report).
-    Calculates averages dynamically from the calibration session sets in SQLite.
+    Calculates averages dynamically from the calibration session sets in storage.
     """
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=400, detail="Database not found. Run agent calibration first.")
-        
-    conn = sqlite3.connect(db_path)
-    cursor = conn.execute("SELECT DISTINCT session_id FROM traces WHERE user_id = ?", (user_id,))
-    sessions = [row[0] for row in cursor.fetchall()]
-    conn.close()
+    cached = get_cached_response("compare", user_id)
+    if cached is not None:
+        return cached
+
+    sessions = store.get_distinct_session_ids(user_id=user_id)
     
     # Filter A: 'calib' sessions
     sessions_a = [s for s in sessions if "calib" in s]
@@ -294,7 +320,7 @@ def compare_versions(user_id: str = Depends(get_current_user_id)) -> Dict[str, A
             "status": status
         })
         
-    return {
+    comparison_res = {
         "version_a": "v1.0.0-baseline ('calib')",
         "version_b": "v1.0.1-fixed-retrieval ('fixed')",
         "overall_verdict": f"Overall Verdict: {verdict} (confidence: {confidence*100:.1f}%)",
@@ -305,6 +331,8 @@ def compare_versions(user_id: str = Depends(get_current_user_id)) -> Dict[str, A
         "pass_rate_b": res_b["pass_rate"],
         "total_runs": res_a["total_runs"]
     }
+    set_cached_response("compare", user_id, comparison_res)
+    return comparison_res
 
 
 

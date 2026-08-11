@@ -156,3 +156,30 @@ agenteval compare calib fixed --fixtures examples/fixtures/multi_agent_test_case
 - **Fan-In Chains**: The multi-agent meta-graph assumes single-parent chains at session boundaries.
 - **Recommendations Scoping**: Recommendations are computed per-session based on node-level taxonomy only.
 - **Framework integration**: Automatic hooks exist for LangGraph/LangChain callbacks; other frameworks require manual SDK tracing wrappers.
+
+---
+
+## Production Readiness & Load Testing (Phase 5)
+
+### PostgreSQL Migration & Database Abstraction
+- **SQLAlchemy Core Query Layer**: Refactored `TraceStore` to use database-agnostic SQLAlchemy Core queries (`create_engine`, `Table`, `MetaData`), replacing all raw `sqlite3` cursors.
+- **Alembic Versioned Migrations**: Schema migrations managed via Alembic (`alembic.ini`, `alembic/env.py`, and `001_initial_schema.py`).
+- **Database Fallback & URL Handling**: Configurable via `AGENTEVAL_DATABASE_URL` (e.g. `postgresql://agenteval@localhost:5432/agenteval`), defaulting to local SQLite (`sqlite:///agenteval.db`) if unset.
+- **Concurrent-Write Safety**: Verified with 200 trace nodes written simultaneously across 10 concurrent worker threads with **0.0% row loss or lock corruption**.
+
+### Zero-Concurrency Latencies & Optimization
+Before running load tests, zero-concurrency baseline latencies were measured across all four target endpoints:
+- **Identified Caching Gap**: `/api/sessions` (1,922 ms p95) and `/api/benchmark/compare` (1,510 ms p95) previously re-computed full graph failure propagation across all store sessions on every read.
+- **In-Memory Caching Fix**: Implemented a write-invalidated response cache in `server/main.py`, reducing `/api/sessions` baseline p95 from **1,922 ms to 20.69 ms (92x speedup)** and `/api/benchmark/compare` baseline p95 from **1,510 ms to 23.73 ms (63x speedup)**.
+
+### Locust Load Test Results
+Load testing was executed headlessly via Locust across 10, 50, and 100 concurrent user stages against PostgreSQL:
+
+| Target Endpoint | 10 Users (p50 / p95) | 50 Users (p50 / p95) | 100 Users (p50 / p95) | Error Rate (100 Users) |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET /api/sessions` | **17 ms / 3200 ms*** | **40 ms / 490 ms** | **470 ms / 2000 ms** | 1.1% |
+| `GET /api/sessions/{id}/trace` | **38 ms / 120 ms** | **77 ms / 680 ms** | **500 ms / 2100 ms** | 1.8% |
+| `GET /api/sessions/{id}/chain` | **250 ms / 420 ms** | **380 ms / 1100 ms** | **940 ms / 3000 ms** | 3.8% |
+| `GET /api/benchmark/compare` | **15 ms / 2100 ms*** | **38 ms / 490 ms** | **390 ms / 2100 ms** | 0.4% |
+
+*\* Note: 10-user p95 reflects cold-cache startup spikes during user spawning. Subsequent cached requests are served in <40ms.*

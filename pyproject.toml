@@ -22,10 +22,14 @@ dependencies = [
     "pyyaml>=6.0.0",
     "langgraph>=0.1.0",
     "langchain-core>=0.2.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "alembic>=1.13.0",
+    "locust>=2.29.0",
 ]
 
 [project.scripts]
 agenteval = "agenteval.benchmark.cli:main"
 
 [tool.setuptools]
-packages = ["agenteval", "agenteval.sdk", "agenteval.eval", "agenteval.root_cause", "agenteval.recommend", "agenteval.benchmark", "agenteval.server"]
+packages = ["agenteval", "agenteval.sdk", "agenteval.eval", "agenteval.root_cause", "agenteval.recommend", "agenteval.benchmark", "agenteval.server", "agenteval.adapters"]

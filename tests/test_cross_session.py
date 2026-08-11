@@ -35,6 +35,10 @@ def test_transitive_chain_walking_depth_cap():
         # The chain is ordered from parent to child, so it should be s3 -> s4 -> s5 -> s6 -> s7
         assert chain_sessions == ["s3", "s4", "s5", "s6", "s7"]
     finally:
+        if 'store' in locals() and store:
+            store.close()
+        if 'engine' in locals() and engine:
+            engine.store.close()
         if os.path.exists(db_path):
             os.remove(db_path)
 
@@ -116,6 +120,10 @@ def test_co_contribution_vs_inherited_classification():
         assert steps_b["s_scr_b"]["status"] == "co-contributor"
         
     finally:
+        if 'store' in locals() and store:
+            store.close()
+        if 'engine' in locals() and engine:
+            engine.store.close()
         if os.path.exists(db_path):
             os.remove(db_path)
 
@@ -151,6 +159,8 @@ def test_backward_compatibility_empty_links():
         assert res["root_cause_session"] == "none"
         assert res["verdict"] == "healthy"
     finally:
+        if 'engine' in locals() and engine:
+            engine.store.close()
         if os.path.exists(db_path):
             os.remove(db_path)
 

@@ -8,10 +8,13 @@ def test_trace_store_initialization():
     """Validates trace store databases initialize tables correctly."""
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    store = None
     try:
         store = TraceStore(db_path=db_path)
         assert os.path.exists(db_path)
     finally:
+        if store:
+            store.close()
         if os.path.exists(db_path):
             os.remove(db_path)
 
@@ -19,6 +22,7 @@ def test_manual_trace_capture():
     """Validates that using the trace context manager records and saves variables."""
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    store = None
     try:
         session_id = "test_session_123"
         node_id = "generator_node"
@@ -45,5 +49,7 @@ def test_manual_trace_capture():
         assert recorded["tokens_out"] == 5
         assert recorded["cost_usd"] == 0.0003
     finally:
+        if store:
+            store.close()
         if os.path.exists(db_path):
             os.remove(db_path)

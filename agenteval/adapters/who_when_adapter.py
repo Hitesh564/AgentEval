@@ -43,14 +43,10 @@ def main():
     print(f"Ingesting {len(run_indices)} cases into '{args.db_path}' under user '{user_id}'...")
     
     # Clean old traces for current batch cases only
-    conn = sqlite3.connect(args.db_path)
     for idx in run_indices:
         item = train_split[idx]
         q_id = item["question_ID"]
-        conn.execute("DELETE FROM traces WHERE user_id = ? AND session_id LIKE ?", (user_id, f"session_{q_id}_%"))
-        conn.execute("DELETE FROM session_links WHERE user_id = ? AND (child_session_id LIKE ? OR parent_session_id LIKE ?)", (user_id, f"session_{q_id}_%", f"session_{q_id}_%"))
-    conn.commit()
-    conn.close()
+        store.delete_case_traces(user_id, q_id)
 
     cases_data = []
     
@@ -69,28 +65,26 @@ def main():
             "question": item["question"]
         })
         
-        # Ingest history as traces
+        last_session_id = None
+        prev_session_id = None
+        step_index = 0
+        
+        # Ingest history as multi-session trace chain
         for i, step in enumerate(history):
             role = step.get("role")
             if role == "human":
                 continue
                 
-            # Map role to specific node type
+            # Map role to specific agent name & node type
             role_clean = role.lower()
-            if "thought" in role_clean:
+            if "thought" in role_clean or "termination" in role_clean or "orchestrator" in role_clean:
                 agent_name = "orchestrator"
-                node_type = "planner"
-            elif "termination" in role_clean:
-                agent_name = "orchestrator"
-                node_type = "critic"
-            elif "orchestrator" in role_clean:
-                agent_name = "orchestrator"
-                node_type = "planner"
+                node_type = "planner" if "termination" not in role_clean else "critic"
             else:
                 agent_name = role_clean
                 node_type = "generator"
                 
-            session_id = f"session_{q_id}_{agent_name}"
+            session_id = f"session_{q_id}_step{step_index}_{agent_name}"
             node_id = f"step_{i}"
             
             # Input context
@@ -119,15 +113,20 @@ def main():
             # Save node
             store.save_trace_node(trace_node)
             
-            # Record active agents to link them
-            if agent_name != "orchestrator":
-                child_session = session_id
-                parent_session = f"session_{q_id}_orchestrator"
-                store.save_session_link(child_session, parent_session, link_reason="Handoff", user_id=user_id)
+            # Register session link to previous session in execution sequence
+            if prev_session_id and prev_session_id != session_id:
+                store.save_session_link(session_id, prev_session_id, link_reason="Handoff", user_id=user_id)
+                
+            prev_session_id = session_id
+            last_session_id = session_id
+            step_index += 1
+
+        # Store observable last session for chain diagnosis
+        cases_data[-1]["last_session"] = last_session_id
 
     print("Ingestion complete. Starting evaluation...")
     
-    # Step 3: Run cases through unmodified CrossSessionEngine
+    # Step 3: Run cases through CrossSessionEngine starting at final observable session
     cross_engine = CrossSessionEngine(db_path=args.db_path, mode=args.mode)
     
     correct_count = 0
@@ -139,12 +138,11 @@ def main():
     
     for case in cases_data:
         q_id = case["question_id"]
-        # The primary root coordinator session is orchestrator
-        start_session = f"session_{q_id}_orchestrator"
+        last_session = case["last_session"]
         
         try:
-            # Diagnose
-            res = cross_engine.diagnose_chain(start_session, user_id=user_id)
+            # Diagnose starting from final observable session in execution chain
+            res = cross_engine.diagnose_chain(last_session, user_id=user_id)
             diagnosed_rc = res["root_cause_session"]
             
             # Expected root cause session name/ID
@@ -161,7 +159,7 @@ def main():
             else:
                 status = "INCORRECT"
                 
-            print(f"Case ID: {q_id[:8]}... | Expected Agent: {case['mistake_agent']:<15} | Diagnosed: {diagnosed_rc:<35} | Verdict: {status}")
+            print(f"Case ID: {q_id[:8]}... | Expected Agent: {case['mistake_agent']:<15} | Diagnosed RC: {diagnosed_rc:<40} | Verdict: {status}")
             evaluated_cases += 1
         except Exception as e:
             print(f"\n[ERROR] Failed to evaluate case {q_id[:8]}...: {str(e)}")

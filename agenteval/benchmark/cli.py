@@ -228,11 +228,9 @@ def main():
             print(f"Error: Database file not found at {db_path}")
             return
             
-        # Retrieve sessions in SQLite
-        conn = sqlite3.connect(db_path)
-        cursor = conn.execute("SELECT DISTINCT session_id FROM traces")
-        sessions = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        # Retrieve sessions from database
+        store = TraceStore(db_path=db_path)
+        sessions = store.get_distinct_session_ids()
         
         # Filter sessions by version string
         sessions_a = [s for s in sessions if args.version_a in s]

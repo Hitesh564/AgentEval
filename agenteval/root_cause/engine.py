@@ -64,7 +64,10 @@ class RootCauseEngine:
                 output_text = str(outputs)
                 
             query = inputs.get("query") or node.get("query", "")
-            system_prompt = "Plan order cancellation and eligibility refund check" if ("eligibility" in str(query).lower() or "qualify" in str(query).lower() or "eligible" in str(query).lower()) else "Plan order cancellation"
+            if "eligibility" in str(query).lower() or "qualify" in str(query).lower() or "eligible" in str(query).lower():
+                system_prompt = "Plan order cancellation and eligibility refund check"
+            else:
+                system_prompt = f"Plan task execution for query: {query}"
 
             
             inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
