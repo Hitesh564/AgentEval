@@ -1,4 +1,5 @@
 import os
+import os
 import json
 import math
 import re
@@ -260,21 +261,22 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
     def evaluate_tool_selection(
         self,
         chosen_tool: Optional[str],
-        candidate_tools: Optional[List[str]] = None,
+        candidate_tools: Optional[List[Any]] = None,
         expected_tool: Optional[str] = None,
         tool_descriptions: Optional[Dict[str, str]] = None,
+        query_embedding: Optional[Sequence[float]] = None,
+        tool_embeddings: Optional[Dict[str, Sequence[float]]] = None,
+        query_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Structured tool-selection evidence.
-
-        Produces a correctness score only when ground-truth expected_tool is present.
-        Otherwise returns an explicit unavailable state rather than inventing accuracy.
+        Structured tool-selection evidence with semantic ranking when embeddings are available.
+        Ground-truth correctness is only derived from expected_tool.
         """
-        candidates = candidate_tools or []
+        raw_candidates = candidate_tools or []
         result: Dict[str, Any] = {
             "chosen_tool": chosen_tool,
             "expected_tool": expected_tool,
-            "candidate_tools": candidates,
+            "candidate_tools": [],
             "candidate_scores": [],
             "chosen_score": None,
             "runner_up_score": None,
@@ -285,48 +287,121 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
             "judge_mode": "deterministic",
             "evidence": {
                 "tool_descriptions": tool_descriptions or {},
+                "query_text": query_text,
             },
         }
 
-        if expected_tool is not None:
-            score = 1.0 if chosen_tool == expected_tool else 0.0
-            result.update(
+        descriptions = tool_descriptions or {}
+        normalized_candidates: List[Dict[str, Any]] = []
+        for idx, candidate in enumerate(raw_candidates):
+            if isinstance(candidate, dict):
+                name = candidate.get("name") or candidate.get("tool_name") or candidate.get("id") or f"candidate_{idx}"
+                embedding = candidate.get("embedding")
+                description = candidate.get("description") or descriptions.get(name)
+            else:
+                name = str(candidate)
+                embedding = None
+                description = descriptions.get(name)
+            normalized_candidates.append(
                 {
-                    "score": score,
-                    "value": score,
-                    "status": "complete",
-                    "chosen_score": score,
-                    "runner_up_score": 1.0 - score,
-                    "margin": score - (1.0 - score),
+                    "name": name,
+                    "description": description,
+                    "embedding": embedding,
+                    "index": idx,
                 }
             )
+
+        result["candidate_tools"] = [{"name": cand["name"], "similarity": None} for cand in normalized_candidates]
+
+        query_vec = _coerce_vector(query_embedding)
+        scores: List[Optional[float]] = []
+        if normalized_candidates and query_vec is not None:
+            for cand in normalized_candidates:
+                cand_vec = _coerce_vector(cand["embedding"])
+                if cand_vec is None:
+                    scores.append(None)
+                    continue
+                try:
+                    scores.append(cosine_similarity(query_vec, cand_vec))
+                except ValueError:
+                    scores.append(None)
+
+        if normalized_candidates and query_vec is None:
+            # No semantic evidence available
+            if expected_tool is not None:
+                score = 1.0 if chosen_tool == expected_tool else 0.0
+                result.update(
+                    {
+                        "score": score,
+                        "value": score,
+                        "status": "complete",
+                        "method": "expected_tool_exact_match",
+                        "chosen_score": None,
+                        "runner_up_score": None,
+                        "margin": None,
+                    }
+                )
             return result
 
-        if chosen_tool and candidates:
-            # When the trace exposes candidate tools, use semantic/name similarity as evidence.
-            # This is evidence, not ground truth correctness.
-            scores: List[float] = []
-            chosen_score = 0.0
-            for candidate in candidates:
-                if candidate == chosen_tool:
-                    score = 1.0
-                else:
-                    score = 0.0
-                scores.append(score)
-                if candidate == chosen_tool:
-                    chosen_score = score
-            runner_up = max((s for s in scores if s != chosen_score), default=0.0)
-            result.update(
-                {
-                    "candidate_scores": scores,
-                    "chosen_score": chosen_score,
-                    "runner_up_score": runner_up,
-                    "margin": chosen_score - runner_up,
-                    "status": "fallback",
-                    "judge_mode": "heuristic_fallback",
-                }
-            )
+        for idx, cand in enumerate(normalized_candidates):
+            similarity = scores[idx] if idx < len(scores) else None
+            result["candidate_tools"][idx]["similarity"] = similarity
 
+        comparable_scores = [s for s in scores if s is not None]
+        if not comparable_scores:
+            if expected_tool is not None:
+                score = 1.0 if chosen_tool == expected_tool else 0.0
+                result.update(
+                    {
+                        "score": score,
+                        "value": score,
+                        "status": "complete",
+                        "method": "expected_tool_exact_match",
+                    }
+                )
+            return result
+
+        chosen_score = None
+        if chosen_tool is not None:
+            chosen_matches = [cand for cand in normalized_candidates if cand["name"] == chosen_tool]
+            chosen_scores = [
+                scores[cand["index"]]
+                for cand in chosen_matches
+                if cand["index"] < len(scores) and scores[cand["index"]] is not None
+            ]
+            if chosen_scores:
+                chosen_score = max(chosen_scores)
+
+        if chosen_score is None and comparable_scores:
+            chosen_score = max(comparable_scores)
+
+        runner_up_candidates = [
+            s for idx, s in enumerate(scores)
+            if s is not None and (chosen_tool is None or normalized_candidates[idx]["name"] != chosen_tool)
+        ]
+        runner_up_score = max(runner_up_candidates) if runner_up_candidates else 0.0
+        margin = (chosen_score - runner_up_score) if chosen_score is not None else None
+
+        result.update(
+            {
+                "chosen_score": chosen_score,
+                "runner_up_score": runner_up_score,
+                "margin": margin,
+                "status": "complete",
+                "method": "cosine_similarity",
+            }
+        )
+
+        if expected_tool is not None:
+            score = 1.0 if chosen_tool == expected_tool else 0.0
+            result["score"] = score
+            result["value"] = score
+            result["expected_tool"] = expected_tool
+        else:
+            result["score"] = None
+            result["value"] = None
+        if chosen_score is not None and runner_up_score is not None:
+            result["evidence"]["margin"] = margin
         return result
 
     def evaluate_retrieval_evidence(

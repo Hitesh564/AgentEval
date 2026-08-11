@@ -1,5 +1,17 @@
 import pytest
+import pytest
+
 from agenteval.eval.metrics import EvaluationEngine, cosine_similarity
+from agenteval.eval.health import get_health_config, weighted_health
+from agenteval.eval.calibration import (
+    select_threshold,
+    calibrate_threshold,
+    balanced_accuracy,
+    ConfidenceCalibration,
+    expected_calibration_error,
+    brier_score,
+    reliability_diagram,
+)
 
 def test_json_validity_metric():
     """Checks that JSON validity correctly parses valid structures and rejects malformed ones."""
@@ -69,6 +81,135 @@ def test_retrieval_evidence_unavailable_without_scores():
     res = engine.evaluate_retrieval_evidence("query", [{"text": "doc without score"}])
     assert res["status"] == "unavailable"
     assert res["score"] is None
+
+def test_tool_selection_semantic_ranking_with_embeddings():
+    """Checks that tool selection can rank candidates with embeddings and compute a margin."""
+    engine = EvaluationEngine()
+    res = engine.evaluate_tool_selection(
+        chosen_tool="search_docs",
+        candidate_tools=[
+            {"name": "search_docs", "embedding": [1.0, 0.0]},
+            {"name": "lookup_policy", "embedding": [0.7, 0.7]},
+            {"name": "small_talk", "embedding": [0.0, 1.0]},
+        ],
+        expected_tool="search_docs",
+        query_embedding=[1.0, 0.0],
+    )
+    assert res["status"] == "complete"
+    assert res["method"] == "cosine_similarity"
+    assert res["score"] == 1.0
+    assert res["chosen_score"] == pytest.approx(1.0)
+    assert res["runner_up_score"] == pytest.approx(0.70710678, rel=1e-6)
+    assert res["margin"] == pytest.approx(0.29289322, rel=1e-6)
+    assert res["candidate_tools"][0]["similarity"] == pytest.approx(1.0)
+
+def test_tool_selection_missing_embeddings_is_not_fabricated():
+    """Checks that missing embeddings do not fabricate semantic confidence."""
+    engine = EvaluationEngine()
+    res = engine.evaluate_tool_selection(
+        chosen_tool="search_docs",
+        candidate_tools=["search_docs", "lookup_policy"],
+        query_embedding=None,
+        expected_tool=None,
+    )
+    assert res["status"] == "unavailable"
+    assert res["score"] is None
+    assert res["chosen_score"] is None
+
+def test_tool_selection_duplicate_names_and_zero_vectors():
+    """Checks duplicate tool names and zero vectors do not break ranking."""
+    engine = EvaluationEngine()
+    res = engine.evaluate_tool_selection(
+        chosen_tool="search_docs",
+        candidate_tools=[
+            {"name": "search_docs", "embedding": [0.0, 0.0]},
+            {"name": "search_docs", "embedding": [1.0, 0.0]},
+        ],
+        expected_tool="search_docs",
+        query_embedding=[1.0, 0.0],
+    )
+    assert res["score"] == 1.0
+    assert res["candidate_tools"][0]["similarity"] == 0.0
+    assert res["candidate_tools"][1]["similarity"] == 1.0
+
+def test_weighted_health_uses_configured_weights():
+    """Checks that weighted health is computed from the configured metric mix."""
+    config = get_health_config("generator")
+    health = weighted_health(
+        {
+            "groundedness": 0.50,
+            "instruction_following": 0.90,
+            "schema_validity": 1.0,
+            "latency": 0.80,
+        },
+        config,
+    )
+    expected = (0.35 * 0.50 + 0.25 * 0.90 + 0.20 * 1.0 + 0.20 * 0.80)
+    assert health["overall_health"] == pytest.approx(expected)
+    assert health["weakest_dimension"] == "groundedness"
+    assert "groundedness" in health["failed_dimensions"]
+
+def test_threshold_selection_prefers_best_f1():
+    """Checks threshold selection on labeled calibration examples."""
+    threshold, metrics = select_threshold([0.1, 0.2, 0.8, 0.9], [1, 1, 0, 0])
+    assert 0.2 <= threshold <= 0.8
+    assert metrics["f1"] >= 0.5
+    assert balanced_accuracy([1, 1, 0, 0], [1, 1, 0, 0]) == 1.0
+
+def test_calibration_result_metadata():
+    """Checks calibration metadata is versioned and split-aware."""
+    result = calibrate_threshold(
+        metric="retrieval",
+        values=[0.1, 0.2, 0.8, 0.9],
+        labels=[1, 1, 0, 0],
+        dataset="unit-test",
+        split="calibration",
+        calibration_version="v1",
+    )
+    assert result.metric == "retrieval"
+    assert result.dataset == "unit-test"
+    assert result.split == "calibration"
+    assert result.calibration_version == "v1"
+    assert result.threshold is not None
+
+def test_confidence_calibration_metrics_and_identity_fallback():
+    """Checks calibrated confidence helpers return calibrated probabilities and calibration metrics."""
+    calibrator = ConfidenceCalibration.identity()
+    fallback = calibrator.calibrate(0.42)
+    assert fallback["raw_score"] == pytest.approx(0.42)
+    assert fallback["calibrated_probability"] == pytest.approx(0.42)
+    assert fallback["status"] == "fallback"
+
+    report = expected_calibration_error([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95], n_bins=2)
+    assert report["ece"] >= 0.0
+    assert len(report["bins"]) == 2
+    assert brier_score([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95]) < 0.03
+    diag = reliability_diagram([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95], n_bins=2)
+    assert len(diag) == 2
+
+def test_temperature_and_isotonic_calibration_fit():
+    """Checks both calibration strategies produce monotone, versioned artifacts."""
+    temperature = ConfidenceCalibration.fit_temperature_scaling(
+        [0.1, 0.2, 0.8, 0.9],
+        [0, 0, 1, 1],
+        version="v-temp",
+    )
+    assert temperature.method == "temperature_scaling"
+    assert temperature.status == "complete"
+    assert 0.25 <= temperature.temperature <= 5.0
+    assert temperature.predict(0.2) < temperature.predict(0.8)
+
+    isotonic = ConfidenceCalibration.fit_isotonic(
+        [0.1, 0.2, 0.8, 0.9],
+        [0, 0, 1, 1],
+        version="v-iso",
+    )
+    assert isotonic.method == "isotonic"
+    assert isotonic.status == "complete"
+    assert isotonic.predict(0.2) <= isotonic.predict(0.8)
+    summary = isotonic.summary([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1])
+    assert "ece" in summary
+    assert "brier_score" in summary
 
 def test_instruction_following_metric():
     """Validates instruction following metric structure."""

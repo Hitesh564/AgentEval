@@ -1,7 +1,10 @@
 import os
+import os
 from typing import Dict, Any, List, Optional
 from agenteval.taxonomy import FailureType
 from agenteval.eval.metrics import EvaluationEngine
+from agenteval.eval.health import get_health_config, weighted_health
+from agenteval.eval.calibration import ConfidenceCalibration
 from agenteval.sdk.storage import TraceStore
 
 class RootCauseEngine:
@@ -9,13 +12,20 @@ class RootCauseEngine:
     Root Cause Engine that analyzes agent trace graphs to find the early-origin failure nodes.
     Uses taxonomy.py FailureType enums for classification.
     """
-    def __init__(self, db_path: str = "agenteval.db", latency_budget: float = 2.0, mode: Optional[str] = None):
+    def __init__(
+        self,
+        db_path: str = "agenteval.db",
+        latency_budget: float = 2.0,
+        mode: Optional[str] = None,
+        confidence_calibrator: Optional[ConfidenceCalibration] = None,
+    ):
         self.db_path = db_path
         self.latency_budget = latency_budget
         if mode is None:
             mode = os.environ.get("AGENTEVAL_MODE", "replay")
         self.eval_engine = EvaluationEngine(db_path=db_path, mode=mode)
         self.store = TraceStore(db_path=db_path)
+        self.confidence_calibrator = confidence_calibrator or ConfidenceCalibration.identity()
 
     def collect_evidence(self, node: Dict[str, Any], session_traces: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -174,57 +184,61 @@ class RootCauseEngine:
 
     def calculate_raw_health(self, node: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Computes raw health [0.0 - 1.0] across all evidence dimensions.
-        Returns a dict of sub-health scores and the minimum raw health.
+        Computes weighted node health across the available evidence dimensions.
+        Keeps per-dimension metrics and weakest-dimension signals for attribution.
         """
-        sub_healths = {}
-        
-        # 1. Latency health
-        latency_val = evidence["latency"]
-        sub_healths["latency"] = max(0.0, 1.0 - (latency_val / self.latency_budget))
-        
-        # 2. Retrieval health
-        sim = evidence["retriever_similarity"]
-        if sim is not None and node["node_type"] == "retriever":
-            sub_healths["retrieval"] = min(1.0, max(0.0, (sim - 0.40) / (0.85 - 0.40)))
-            
-        # 3. Tool health
-        margin = evidence["tool_margin"]
-        tool_evidence = evidence.get("tool_evidence") or {}
-        if node["node_type"] == "planner":
-            if tool_evidence.get("score") is not None:
-                sub_healths["tool_selection"] = float(tool_evidence["score"])
-            elif margin is not None:
-                sub_healths["tool_selection"] = min(1.0, max(0.0, margin / 0.20))
-            
-        # 4. Groundedness health
-        g_ratio = evidence["groundedness_ratio"]
-        if g_ratio is not None and (node["node_type"] == "generator" or node["node_id"] == "synthesizer"):
-            sub_healths["grounding"] = g_ratio
-            
-        # 5. JSON formatting health
-        if node["node_type"] == "generator" or node["node_id"] == "synthesizer":
-            sub_healths["formatting"] = evidence["json_valid"]
-        
-        # 6. Instruction following health
-        if node["node_type"] in ("generator", "planner") or node["node_id"] == "synthesizer":
-            sub_healths["instruction"] = evidence["instruction_following"]
+        node_type = node["node_type"]
+        config = get_health_config(node_type)
 
-        # 6.5. Critic correctness health
-        correctness = evidence.get("critic_correctness")
-        if correctness is not None and node["node_type"] == "critic":
-            sub_healths["critic_correctness"] = correctness
-        
-        # Overall raw health is the minimum of all sub-healths
-        raw_health = min(sub_healths.values())
-        
-        # Map worst health dimension to FailureType category
-        worst_dim = min(sub_healths, key=sub_healths.get)
+        metric_scores: Dict[str, Optional[float]] = {}
+
+        latency_health = max(0.0, 1.0 - (evidence["latency"] / self.latency_budget))
+        metric_scores["latency"] = latency_health
+
+        if node_type == "retriever":
+            retrieval = evidence.get("retrieval_evidence") or {}
+            retrieval_score = retrieval.get("score", evidence.get("retriever_similarity"))
+            if retrieval_score is not None:
+                metric_scores["retrieval_relevance"] = float(retrieval_score)
+            if retrieval.get("recall_at_k") is not None:
+                metric_scores["retrieval_recall"] = float(retrieval["recall_at_k"])
+            if retrieval.get("evidence", {}).get("retrieved_docs_count") is not None:
+                metric_scores["retrieval_coverage"] = 1.0 if retrieval["evidence"]["retrieved_docs_count"] > 0 else 0.0
+
+        if node_type == "planner":
+            tool_evidence = evidence.get("tool_evidence") or {}
+            if tool_evidence.get("score") is not None:
+                metric_scores["tool_selection"] = float(tool_evidence["score"])
+            if tool_evidence.get("argument_score") is not None:
+                metric_scores["tool_arguments"] = float(tool_evidence["argument_score"])
+            if evidence.get("instruction_following") is not None:
+                metric_scores["instruction_following"] = float(evidence["instruction_following"])
+
+        if node_type == "generator" or node["node_id"] == "synthesizer":
+            if evidence.get("groundedness_ratio") is not None:
+                metric_scores["groundedness"] = float(evidence["groundedness_ratio"])
+            if evidence.get("instruction_following") is not None:
+                metric_scores["instruction_following"] = float(evidence["instruction_following"])
+            if evidence.get("json_valid") is not None:
+                metric_scores["schema_validity"] = float(evidence["json_valid"])
+
+        if node_type == "critic":
+            if evidence.get("critic_correctness") is not None:
+                metric_scores["critic_correctness"] = float(evidence["critic_correctness"])
+            if evidence.get("instruction_following") is not None:
+                metric_scores["instruction_following"] = float(evidence["instruction_following"])
+
+        health = weighted_health(metric_scores, config)
+        raw_health = health["overall_health"] if health["overall_health"] is not None else 0.0
+        worst_dim = health["weakest_dimension"]
         failure_type = None
-        if raw_health < 0.70:
-            if worst_dim == "retrieval":
+        threshold = config.threshold_policy.get("overall", 0.70)
+        if health["overall_health"] is not None and health["overall_health"] < threshold:
+            if worst_dim in ("retrieval", "retrieval_relevance", "retrieval_recall", "retrieval_coverage"):
                 failure_type = FailureType.RETRIEVAL_FAILURE
             elif worst_dim == "tool_selection":
+                failure_type = FailureType.TOOL_SELECTION_FAILURE
+            elif worst_dim == "tool_arguments":
                 failure_type = FailureType.TOOL_SELECTION_FAILURE
             elif worst_dim == "instruction":
                 # Instruction violation could mean reasoning or planning error
@@ -232,9 +246,9 @@ class RootCauseEngine:
                     failure_type = FailureType.PLANNING_FAILURE
                 else:
                     failure_type = FailureType.REASONING_FAILURE
-            elif worst_dim == "grounding":
+            elif worst_dim in ("grounding", "groundedness"):
                 failure_type = FailureType.GROUNDING_FAILURE
-            elif worst_dim == "formatting":
+            elif worst_dim in ("formatting", "schema_validity"):
                 failure_type = FailureType.OUTPUT_FORMATTING_FAILURE
             elif worst_dim == "latency":
                 failure_type = FailureType.LATENCY_FAILURE
@@ -245,7 +259,14 @@ class RootCauseEngine:
                 
         return {
             "raw_health": raw_health,
-            "sub_healths": sub_healths,
+            "overall_health": raw_health,
+            "metric_scores": health["metric_scores"],
+            "weakest_dimension": health["weakest_dimension"],
+            "weakest_dimension_score": health["weakest_dimension_score"],
+            "failed_dimensions": health["failed_dimensions"],
+            "evaluation_status": health["evaluation_status"],
+            "sub_healths": health["metric_scores"],
+            "legacy_min_health": health["legacy_min_health"],
             "failure_type": failure_type
         }
 
@@ -267,21 +288,28 @@ class RootCauseEngine:
             
         node_maps = {}
         for node_id, attempts in grouped_traces.items():
+            first_attempt = attempts[0]
             final_attempt = attempts[-1]
-            evidence = self.collect_evidence(final_attempt, session_traces)
-            health_details = self.calculate_raw_health(final_attempt, evidence)
-            
-            # Apply loop retry penalty logic
+            final_evidence = self.collect_evidence(final_attempt, session_traces)
+            first_evidence = self.collect_evidence(first_attempt, session_traces) if len(attempts) > 1 else final_evidence
+            health_details = self.calculate_raw_health(final_attempt, final_evidence)
+            first_health_details = self.calculate_raw_health(first_attempt, first_evidence)
+
             final_health = health_details["raw_health"]
+            first_attempt_health = first_health_details["raw_health"]
             n_retries = len(attempts) - 1
-            
+
             consolidated_health = final_health
-            if final_health >= 0.70 and n_retries >= 1:
-                consolidated_health = max(0.71, final_health - 0.10 * n_retries)
-                
-            evidence["retry_count"] = n_retries
+
+            final_evidence["retry_count"] = n_retries
+            final_evidence["first_attempt_health"] = first_attempt_health
+            final_evidence["final_attempt_health"] = final_health
+            final_evidence["retry_latency_cost"] = sum(
+                max(0.0, self.eval_engine.evaluate_latency(a["timestamp_start"], a["timestamp_end"]))
+                for a in attempts
+            ) if len(attempts) > 1 else 0.0
             
-            # If it succeeded (even with penalty), clear failure_type
+            # If the final attempt is healthy, clear failure_type; retries remain explicit evidence.
             failure_type = health_details["failure_type"]
             if consolidated_health >= 0.70:
                 failure_type = None
@@ -292,14 +320,21 @@ class RootCauseEngine:
                 "parent_node_ids": final_attempt.get("parent_node_ids", []),
                 "raw_health": consolidated_health,
                 "adjusted_health": consolidated_health,
+                "overall_health": health_details.get("overall_health", consolidated_health),
+                "metric_scores": health_details.get("metric_scores", {}),
+                "weakest_dimension": health_details.get("weakest_dimension"),
+                "weakest_dimension_score": health_details.get("weakest_dimension_score"),
+                "failed_dimensions": health_details.get("failed_dimensions", []),
+                "evaluation_status": health_details.get("evaluation_status", "complete"),
+                "legacy_min_health": health_details.get("legacy_min_health"),
                 "failure_type": failure_type,
-                "evidence": evidence,
+                "evidence": final_evidence,
                 "is_root_cause": False,
                 "is_co_originator": False,
                 "inherited_from_node_ids": [],
                 "confidence": 1.0,
                 "confidence_tier": "high",
-                "judge_mode": evidence["judge_mode"],
+                "judge_mode": final_evidence["judge_mode"],
                 "timestamp_start": final_attempt["timestamp_start"]
             }
             
@@ -315,6 +350,46 @@ class RootCauseEngine:
                     # Penalize adjusted health based on upstream parents
                     n_data["adjusted_health"] = n_data["raw_health"] * min(parent_adjusted)
 
+        # Build reverse dependency edges for downstream evidence
+        child_map: Dict[str, List[str]] = {node_id: [] for node_id in node_maps}
+        for n_data in sorted_nodes:
+            for parent_id in n_data.get("parent_node_ids", []):
+                if parent_id in child_map:
+                    child_map[parent_id].append(n_data["node_id"])
+
+        # Step 2.5: Compute dependency-aware attribution evidence
+        total_nodes = max(1, len(sorted_nodes))
+        for idx, n_data in enumerate(sorted_nodes):
+            node_id = n_data["node_id"]
+            parents = n_data.get("parent_node_ids", [])
+            child_ids = child_map.get(node_id, [])
+
+            local_failure_score = max(0.0, 1.0 - n_data["raw_health"])
+            upstream_scores = [max(0.0, 1.0 - node_maps[p]["raw_health"]) for p in parents if p in node_maps]
+            upstream_dependency_score = sum(upstream_scores) / len(upstream_scores) if upstream_scores else 0.0
+            downstream_scores = [max(0.0, 1.0 - node_maps[c]["raw_health"]) for c in child_ids if c in node_maps]
+            downstream_consistency_score = sum(downstream_scores) / len(downstream_scores) if downstream_scores else 0.0
+            temporal_score = 1.0 - (idx / (total_nodes - 1)) if total_nodes > 1 else 1.0
+
+            components = {
+                "local_failure_score": local_failure_score,
+                "upstream_dependency_score": upstream_dependency_score,
+                "downstream_consistency_score": downstream_consistency_score,
+                "temporal_score": temporal_score,
+            }
+            weights = {
+                "local_failure_score": 0.45,
+                "upstream_dependency_score": 0.20,
+                "downstream_consistency_score": 0.15,
+                "temporal_score": 0.20,
+            }
+            weight_sum = sum(weights.values())
+            attribution_score = sum(components[k] * weights[k] for k in components) / weight_sum if weight_sum else local_failure_score
+
+            n_data["children_node_ids"] = child_ids
+            n_data["attribution_evidence"] = components
+            n_data["attribution_score"] = attribution_score
+
         # Step 3: Identify failure candidates that do not inherit failure from upstream
         candidates = []
         for n_data in sorted_nodes:
@@ -327,22 +402,27 @@ class RootCauseEngine:
                 and node_maps[revision_id]["raw_health"] >= 0.70
             )
             
-            if n_data["raw_health"] < 0.70 and not is_resolved_by_revision:
+            if n_data.get("failed_dimensions") and not is_resolved_by_revision:
                 parents = n_data["parent_node_ids"]
                 has_failed_parent = False
                 if parents:
-                    has_failed_parent = any(
-                        node_maps[p]["raw_health"] < 0.70 
-                        for p in parents if p in node_maps and p != node_id
-                    )
+                    parent_failure_types = {
+                        node_maps[p]["failure_type"].value
+                        for p in parents
+                        if p in node_maps and node_maps[p].get("failure_type") is not None and p != node_id
+                    }
+                    current_failure_type = failure_type.value if failure_type is not None else None
+                    has_failed_parent = current_failure_type in parent_failure_types if current_failure_type else False
                 if not has_failed_parent:
                     candidates.append(n_data)
         
-        # Sort candidates by raw_health (worst/lowest first)
-        candidates.sort(key=lambda x: x["raw_health"])
+        # Sort candidates by attribution score rather than raw health alone
+        candidates.sort(key=lambda x: x.get("attribution_score", 0.0), reverse=True)
         
         root_cause_node = None
         is_ambiguous = False
+        candidate_separation = 0.0
+        calibrated_probability = None
         confidence = 1.0
         confidence_tier = "high"
         
@@ -350,19 +430,22 @@ class RootCauseEngine:
             root_cause_node = candidates[0]
             root_cause_node["is_root_cause"] = True
             
-            # Compute confidence against second lowest health node overall
-            h_root = root_cause_node["raw_health"]
+            # Compute candidate separation against the second-best attribution score
+            h_root = root_cause_node.get("attribution_score", root_cause_node["raw_health"])
             other_healths = [
-                n["raw_health"] for n in node_maps.values() 
+                n.get("attribution_score", n["raw_health"]) for n in node_maps.values() 
                 if n["node_id"] != root_cause_node["node_id"]
             ]
-            h_second = min(other_healths) if other_healths else 1.0
-            confidence = 1.0 - min(h_root / (h_second + 1e-5), 1.0)
+            h_second = max(other_healths) if other_healths else 0.0
+            candidate_separation = max(0.0, min(1.0, h_root - h_second))
+            calibrated = self.confidence_calibrator.calibrate(candidate_separation)
+            calibrated_probability = calibrated.get("calibrated_probability")
+            confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
             
         elif len(candidates) >= 2:
             c1 = candidates[0]
             c2 = candidates[1]
-            gap = abs(c2["raw_health"] - c1["raw_health"])
+            gap = abs(c1["raw_health"] - c2["raw_health"])
             
             # Sibling Check: Check if they share a common downstream child node
             # If the graph is linear (no merge/branching points), we bypass sibling scoping
@@ -382,21 +465,28 @@ class RootCauseEngine:
                 is_ambiguous = True
                 c1["is_co_originator"] = True
                 c2["is_co_originator"] = True
-                confidence = 0.0
+                candidate_separation = 0.0
+                calibrated = self.confidence_calibrator.calibrate(candidate_separation)
+                calibrated_probability = calibrated.get("calibrated_probability")
+                confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
                 confidence_tier = "ambiguous"
             else:
                 # Worst candidate is root cause
                 root_cause_node = c1
                 root_cause_node["is_root_cause"] = True
-                h_root = root_cause_node["raw_health"]
-                h_second = c2["raw_health"]
-                confidence = 1.0 - min(h_root / (h_second + 1e-5), 1.0)
+                h_root = root_cause_node.get("attribution_score", root_cause_node["raw_health"])
+                h_second = c2.get("attribution_score", c2["raw_health"])
+                candidate_separation = max(0.0, min(1.0, h_root - h_second))
+                calibrated = self.confidence_calibrator.calibrate(candidate_separation)
+                calibrated_probability = calibrated.get("calibrated_probability")
+                confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
                 
         # Set confidence tier for non-ambiguous cases
         if not is_ambiguous and root_cause_node:
-            if confidence >= 0.75:
+            tier_basis = confidence if confidence is not None else candidate_separation
+            if tier_basis >= 0.75:
                 confidence_tier = "high"
-            elif confidence >= 0.40:
+            elif tier_basis >= 0.40:
                 confidence_tier = "medium"
             else:
                 confidence_tier = "ambiguous"
@@ -405,6 +495,12 @@ class RootCauseEngine:
         for n_data in node_maps.values():
             n_data["confidence"] = confidence
             n_data["confidence_tier"] = confidence_tier
+            n_data["candidate_separation"] = candidate_separation
+            n_data["raw_score"] = candidate_separation
+            n_data["calibrated_probability"] = calibrated_probability
+            n_data["calibration_method"] = self.confidence_calibrator.method
+            n_data["calibration_status"] = self.confidence_calibrator.status
+            n_data["calibration_version"] = self.confidence_calibrator.version
 
         # Step 3.5: Set is_inherited_degradation boolean and inherited_from_node_ids
         for n_data in node_maps.values():
@@ -413,7 +509,7 @@ class RootCauseEngine:
             if parents:
                 failed_parents = [
                     p for p in parents 
-                    if p in node_maps and node_maps[p]["raw_health"] < 0.70
+                    if p in node_maps and node_maps[p].get("failed_dimensions")
                 ]
             
             n_data["is_inherited_degradation"] = (not n_data["is_root_cause"]) and (not n_data["is_co_originator"]) and bool(failed_parents)

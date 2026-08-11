@@ -1,4 +1,5 @@
 import os
+import os
 import time
 import sqlite3
 from fastapi import FastAPI, HTTPException, Header, Depends
@@ -146,8 +147,21 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
     if root_cause:
         root_cause_summary = {
             "node_id": root_cause["node_id"],
+            "node_type": root_cause["node_type"],
+            "failure_type": root_cause["failure_type"].value if root_cause.get("failure_type") else None,
+            "raw_health": round(root_cause["raw_health"], 2),
+            "overall_health": round(root_cause.get("overall_health", root_cause["raw_health"]), 2),
+            "weakest_dimension": root_cause.get("weakest_dimension"),
+            "weakest_dimension_score": round(root_cause.get("weakest_dimension_score", 0.0), 2) if root_cause.get("weakest_dimension_score") is not None else None,
+            "attribution_score": round(root_cause.get("attribution_score", 0.0), 2),
+            "candidate_separation": round(root_cause.get("candidate_separation", 0.0), 2),
+            "calibrated_probability": round(root_cause.get("calibrated_probability", root_cause["confidence"]), 2) if root_cause.get("calibrated_probability") is not None else None,
+            "raw_score": round(root_cause.get("raw_score", root_cause.get("candidate_separation", 0.0)), 2),
+            "calibration_method": root_cause.get("calibration_method"),
+            "calibration_status": root_cause.get("calibration_status"),
+            "calibration_version": root_cause.get("calibration_version"),
             "confidence": round(root_cause["confidence"], 2),
-            "confidence_tier": root_cause["confidence_tier"]
+            "confidence_tier": root_cause["confidence_tier"],
         }
         
     co_originators = [
@@ -173,11 +187,27 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
             "node_type": node["node_type"],
             "raw_health": round(node["raw_health"], 2),
             "adjusted_health": round(node["adjusted_health"], 2),
+            "overall_health": round(node.get("overall_health", node["raw_health"]), 2),
+            "metric_scores": node.get("metric_scores", {}),
+            "weakest_dimension": node.get("weakest_dimension"),
+            "weakest_dimension_score": node.get("weakest_dimension_score"),
+            "failed_dimensions": node.get("failed_dimensions", []),
+            "evaluation_status": node.get("evaluation_status", "complete"),
             "is_root_cause": node["is_root_cause"],
             "is_inherited_degradation": node.get("is_inherited_degradation", False),
             "is_co_originator": node.get("is_co_originator", False),
             "inherited_from_node_ids": node.get("inherited_from_node_ids", []),
+            "children_node_ids": node.get("children_node_ids", []),
             "parent_node_ids": node["parent_node_ids"],
+            "failure_type": node["failure_type"].value if node.get("failure_type") else None,
+            "attribution_score": round(node.get("attribution_score", 0.0), 2),
+            "attribution_evidence": node.get("attribution_evidence", {}),
+            "candidate_separation": round(node.get("candidate_separation", 0.0), 2),
+            "calibrated_probability": round(node.get("calibrated_probability", 0.0), 2) if node.get("calibrated_probability") is not None else None,
+            "raw_score": round(node.get("raw_score", node.get("candidate_separation", 0.0)), 2),
+            "calibration_method": node.get("calibration_method"),
+            "calibration_status": node.get("calibration_status"),
+            "calibration_version": node.get("calibration_version"),
             "evidence": node["evidence"],
             "confidence": round(node["confidence"], 2) if "confidence" in node else 1.0,
             "confidence_tier": node.get("confidence_tier", "high"),

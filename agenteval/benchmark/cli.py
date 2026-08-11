@@ -1,9 +1,11 @@
 import os
+import os
 import argparse
 import sqlite3
 import yaml
 from typing import Dict, Any, List, Optional
 from agenteval.eval.metrics import EvaluationEngine
+from agenteval.benchmark.metrics import BenchmarkRecord, benchmark_summary, render_benchmark_markdown
 from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.sdk.storage import TraceStore
 
@@ -33,6 +35,85 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
     fixtures = load_fixtures(fixtures_path)
     eval_count = 0
     heuristic_count = 0
+    benchmark_records: List[BenchmarkRecord] = []
+
+    def _normalize_label(label: Optional[str]) -> str:
+        if not label:
+            return "none"
+        value = str(label).strip().lower()
+        mapping = {
+            "retriever": "retriever",
+            "planner": "planner",
+            "generator": "generator",
+            "critic": "critic",
+            "none": "none",
+            "ambiguous": "ambiguous",
+            "retrieval_agent": "retrieval_agent",
+            "scoring_agent": "scoring_agent",
+            "conductor_agent": "conductor_agent",
+            "policy_retriever": "retriever",
+            "product_retriever": "retriever",
+            "synthesizer": "generator",
+            "generator_revision": "generator",
+        }
+        return mapping.get(value, value)
+
+    def _session_agent_label(session_id: str) -> str:
+        sid = session_id.lower()
+        if "ret" in sid:
+            return "retrieval_agent"
+        if "scr" in sid:
+            return "scoring_agent"
+        if "con" in sid:
+            return "conductor_agent"
+        return "none"
+
+    def _session_index(session_id: str) -> Optional[int]:
+        try:
+            import re
+            match = re.search(r"(\d+)$", session_id)
+            return int(match.group(1)) if match else None
+        except Exception:
+            return None
+
+    def _filter_sessions_by_suffix(session_list: List[str], lower: int, upper: Optional[int] = None) -> List[str]:
+        filtered: List[str] = []
+        for session_id in session_list:
+            suffix = _session_index(session_id)
+            if suffix is None:
+                continue
+            if upper is None:
+                if suffix >= lower:
+                    filtered.append(session_id)
+            elif lower <= suffix < upper:
+                filtered.append(session_id)
+        return filtered
+
+    def _append_benchmark_record(
+        *,
+        case_id: str,
+        true_agent: str,
+        pred_agent: str,
+        confidence: Optional[float],
+        pred_step: Optional[str] = None,
+        true_step: Optional[str] = None,
+        top_k_agents: Optional[List[str]] = None,
+        baseline_last_failure: Optional[str] = None,
+        baseline_v1: Optional[str] = None,
+    ) -> None:
+        benchmark_records.append(
+            BenchmarkRecord(
+                case_id=case_id,
+                true_agent=_normalize_label(true_agent),
+                pred_agent=_normalize_label(pred_agent),
+                true_step=true_step,
+                pred_step=pred_step,
+                confidence=confidence,
+                top_k_agents=top_k_agents,
+                baseline_last_failure=_normalize_label(baseline_last_failure) if baseline_last_failure else None,
+                baseline_v1=_normalize_label(baseline_v1) if baseline_v1 else None,
+            )
+        )
 
     def _metric_value(node: Dict[str, Any], evidence: Dict[str, Any], key: str) -> Optional[float]:
         if key == "instruction_following":
@@ -100,11 +181,43 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
             
             # Check correctness against expected root cause session and node in fixtures
             try:
-                suffix = int(session_id.split("_")[-1])
+                suffix = _session_index(session_id)
+                if suffix is None:
+                    continue
                 fixture = next((f for f in fixtures if f["id"] == f"multi_agent_case_{suffix - 399:03d}"), None)
                 if fixture:
                     expected_rc_session = fixture["expected_root_cause_session"]
                     expected_rc_node = fixture["expected_root_cause_node"]
+                    top_agents = [
+                        _session_agent_label(step["session_id"])
+                        for step in res_chain["chain"]
+                        if step["status"] in ("root-cause", "co-contributor")
+                    ]
+                    pred_agent = _session_agent_label(root_cause_session)
+                    if root_cause_session == "ambiguous":
+                        pred_agent = "ambiguous"
+                    elif root_cause_session == "none":
+                        pred_agent = "none"
+                    pred_step = next((step["root_cause_node"] for step in res_chain["chain"] if step["status"] == "root-cause"), None)
+                    baseline_last_failure = next(
+                        (_session_agent_label(step["session_id"]) for step in reversed(res_chain["chain"]) if step["status"] in ("root-cause", "co-contributor")),
+                        "none",
+                    )
+                    baseline_v1 = next(
+                        (_session_agent_label(step["session_id"]) for step in res_chain["chain"] if step["status"] in ("root-cause", "co-contributor")),
+                        "none",
+                    )
+                    _append_benchmark_record(
+                        case_id=fixture["id"],
+                        true_agent=expected_rc_session,
+                        pred_agent=pred_agent,
+                        confidence=1.0 if root_cause_session == "ambiguous" else 0.0 if root_cause_session == "none" else 0.5,
+                        pred_step=pred_step,
+                        true_step=expected_rc_node if expected_rc_node != "none" else None,
+                        top_k_agents=[label for label in top_agents if label != "none"],
+                        baseline_last_failure=baseline_last_failure,
+                        baseline_v1=baseline_v1,
+                    )
                     
                     if version == "fixed":
                         if expected_rc_session in ("retrieval_agent", "scoring_agent"):
@@ -180,7 +293,9 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
     
             # Check attribution accuracy against ground truth in fixtures
             try:
-                suffix = int(session_id.split("_")[-1])
+                suffix = _session_index(session_id)
+                if suffix is None:
+                    continue
                 if "retry" in fixtures_path:
                     idx = suffix - 300
                 elif "branching" in fixtures_path:
@@ -190,6 +305,22 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
                 if 0 <= idx < len(fixtures):
                     fixture = fixtures[idx]
                     expected_rc = fixture["expected_root_cause"]
+                    top_agents = [node["node_type"] for node in sorted(diagnosed, key=lambda n: n.get("attribution_score", 0.0), reverse=True) if node["node_type"]]
+                    pred_agent = "ambiguous" if any(node.get("is_co_originator") for node in diagnosed) else next((node["node_type"] for node in diagnosed if node.get("is_root_cause")), "none")
+                    pred_step = next((node["node_id"] for node in diagnosed if node.get("is_root_cause")), None)
+                    baseline_last_failure = next((node["node_type"] for node in reversed(diagnosed) if node.get("failed_dimensions")), "none")
+                    baseline_v1 = next((node["node_type"] for node in sorted(diagnosed, key=lambda n: n.get("raw_health", 1.0)) if node.get("failed_dimensions")), "none")
+                    _append_benchmark_record(
+                        case_id=fixture["id"],
+                        true_agent=expected_rc,
+                        pred_agent=pred_agent,
+                        confidence=next((node.get("confidence") for node in diagnosed if node.get("is_root_cause")), 0.0),
+                        pred_step=pred_step,
+                        true_step=None,
+                        top_k_agents=[label for label in dict.fromkeys(top_agents) if label != "none"],
+                        baseline_last_failure=baseline_last_failure,
+                        baseline_v1=baseline_v1,
+                    )
                     
                     # If version is fixed and case was resolved in fixed mode, expected root cause is none
                     if version == "fixed" and fixture.get("resolved_in_fixed_mode"):
@@ -229,6 +360,7 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
         
     accuracy = (correct_attributions / diagnosed_count) if diagnosed_count > 0 else None
     pass_rate = (passed_runs / len(session_ids)) if session_ids else 0.0
+    benchmark = benchmark_summary(benchmark_records) if benchmark_records else None
     
     return {
         "averages": averages,
@@ -237,6 +369,8 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
         "total_runs": len(session_ids),
         "eval_count": eval_count,
         "heuristic_count": heuristic_count
+        ,
+        "benchmark": benchmark,
     }
 
 
@@ -250,6 +384,13 @@ def main():
     compare_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
     compare_parser.add_argument("--mode", type=str, choices=["replay", "live"], default="replay", help="Evaluation mode (replay or live)")
     compare_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
+
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run benchmark metrics and baselines on stored traces")
+    benchmark_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
+    benchmark_parser.add_argument("--mode", type=str, choices=["replay", "live"], default="replay", help="Evaluation mode (replay or live)")
+    benchmark_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
+    benchmark_parser.add_argument("--prefix", type=str, default="", help="Optional session prefix filter")
+    benchmark_parser.add_argument("--output", type=str, default="reports/benchmark_report.md", help="Markdown output path")
 
     args = parser.parse_args()
     
@@ -269,17 +410,17 @@ def main():
         
         # Suffix filtering to prevent linear, branching, and retry runs from overlapping
         if "multi_agent" in args.fixtures:
-            sessions_a = [s for s in sessions_a if "con" in s and int(s.split("_")[-1]) >= 400]
-            sessions_b = [s for s in sessions_b if "con" in s and int(s.split("_")[-1]) >= 400]
+            sessions_a = [s for s in _filter_sessions_by_suffix(sessions_a, 400) if "con" in s]
+            sessions_b = [s for s in _filter_sessions_by_suffix(sessions_b, 400) if "con" in s]
         elif "retry" in args.fixtures:
-            sessions_a = [s for s in sessions_a if 300 <= int(s.split("_")[-1]) < 400]
-            sessions_b = [s for s in sessions_b if 300 <= int(s.split("_")[-1]) < 400]
+            sessions_a = _filter_sessions_by_suffix(sessions_a, 300, 400)
+            sessions_b = _filter_sessions_by_suffix(sessions_b, 300, 400)
         elif "branching" in args.fixtures:
-            sessions_a = [s for s in sessions_a if 200 <= int(s.split("_")[-1]) < 300]
-            sessions_b = [s for s in sessions_b if 200 <= int(s.split("_")[-1]) < 300]
+            sessions_a = _filter_sessions_by_suffix(sessions_a, 200, 300)
+            sessions_b = _filter_sessions_by_suffix(sessions_b, 200, 300)
         else:
-            sessions_a = [s for s in sessions_a if int(s.split("_")[-1]) < 200]
-            sessions_b = [s for s in sessions_b if int(s.split("_")[-1]) < 200]
+            sessions_a = [s for s in _filter_sessions_by_suffix(sessions_a, 0, 200)]
+            sessions_b = [s for s in _filter_sessions_by_suffix(sessions_b, 0, 200)]
         
         if not sessions_a:
             print(f"Error: No traces found matching Version A: '{args.version_a}' in database '{db_path}'.")
@@ -409,6 +550,49 @@ def main():
         total_heuristics = res_a.get("heuristic_count", 0) + res_b.get("heuristic_count", 0)
         if total_heuristics > 0:
             print(f"[WARNING] {total_heuristics}/{total_evals} evaluations used heuristic fallback due to cache misses. Results may not reflect live-judge accuracy.")
+
+        if res_a.get("benchmark"):
+            bench_a = res_a["benchmark"]
+            bench_b = res_b["benchmark"]
+            print(f"\nBaseline comparison (agent-level):")
+            for name in ("random", "majority", "last_failure", "v1", "v2"):
+                a_metrics = bench_a["baseline_metrics"][name]
+                b_metrics = bench_b["baseline_metrics"][name]
+                print(
+                    f"- {name}: A acc={a_metrics['accuracy']:.3f}, B acc={b_metrics['accuracy']:.3f}, "
+                    f"A macro_f1={a_metrics['macro_f1']:.3f}, B macro_f1={b_metrics['macro_f1']:.3f}"
+                )
+
+    elif args.command == "benchmark":
+        db_path = args.db
+        if not os.path.exists(db_path):
+            print(f"Error: Database file not found at {db_path}")
+            return
+
+        store = TraceStore(db_path=db_path)
+        sessions = store.get_distinct_session_ids(user_id=None)
+        if args.prefix:
+            sessions = [s for s in sessions if args.prefix in s]
+        if not sessions:
+            print("Error: No sessions found for benchmark run.")
+            return
+
+        result = evaluate_runs(sessions, db_path, version="benchmark", mode=args.mode, fixtures_path=args.fixtures)
+        benchmark = result.get("benchmark")
+        if not benchmark:
+            print("Error: Benchmark summary could not be generated.")
+            return
+
+        report_md = render_benchmark_markdown(benchmark, title="AgentEval Benchmark Report")
+        output_path = args.output
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(report_md)
+
+        print(report_md)
+        print(f"\n[OK] Benchmark report written to {output_path}")
 
 
     else:

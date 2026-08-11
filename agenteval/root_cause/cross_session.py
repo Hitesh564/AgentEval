@@ -43,7 +43,14 @@ class CrossSessionEngine:
             # Find diagnosed root cause or co-originator node failures
             rc_node = next((n for n in diagnosed if n["is_root_cause"]), None)
             co_nodes = [n for n in diagnosed if n.get("is_co_originator")]
-            passed = (rc_node is None and not co_nodes)
+            has_any_failure = any(n.get("failed_dimensions") for n in diagnosed)
+            has_independent_failure = (rc_node is not None) or bool(co_nodes)
+            passed = not has_any_failure
+            session_failure_types = {
+                n["failure_type"].value
+                for n in diagnosed
+                if (n.get("is_root_cause") or n.get("is_co_originator")) and n.get("failure_type") is not None
+            }
             
             avg_score = sum(n["raw_health"] for n in diagnosed) / len(diagnosed) if diagnosed else 1.0
             
@@ -59,6 +66,8 @@ class CrossSessionEngine:
                 "overall_score": avg_score,
                 "meta_health": meta_health,
                 "passed": passed,
+                "has_independent_failure": has_independent_failure,
+                "failure_types": session_failure_types,
                 "diagnosed": diagnosed,
                 "root_cause_node": rc_node,
                 "co_originator_nodes": co_nodes
@@ -100,28 +109,15 @@ class CrossSessionEngine:
         # We have at least one failure. The first failed session is the primary root cause.
         primary_failed_res = session_results[first_failed_idx]
         primary_failed_session = primary_failed_res["session_id"]
+        primary_failed_types = primary_failed_res.get("failure_types", set())
         
         # Check downstream sessions for independent co-contributions
         co_contributors = []
         for idx in range(first_failed_idx + 1, len(session_results)):
             res = session_results[idx]
             if res["meta_health"] < 0.70:
-                # Determine if this session failed independently (Decision 3)
-                is_independent = False
-                s_id = res["session_id"]
-                diagnosed = res["diagnosed"]
-                
-                if "scoring" in s_id or "scr" in s_id:
-                    gen_node = next((n for n in diagnosed if n["node_id"] in ("scoring_generator", "scoring_logic")), None)
-                    if gen_node and gen_node["raw_health"] < 0.70:
-                        is_independent = True
-                elif "conductor" in s_id or "con" in s_id:
-                    gen_node = next((n for n in diagnosed if n["node_id"] == "conductor_generator"), None)
-                    if gen_node and gen_node["raw_health"] < 0.70:
-                        is_independent = True
-                        
-                if is_independent:
-                    co_contributors.append(s_id)
+                if res["has_independent_failure"] and not res.get("failure_types", set()).issubset(primary_failed_types):
+                    co_contributors.append(res["session_id"])
                     
         # Determine overall chain verdict and root cause session
         if co_contributors:

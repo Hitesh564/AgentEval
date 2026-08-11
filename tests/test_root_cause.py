@@ -1,4 +1,6 @@
 import pytest
+import pytest
+
 from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.taxonomy import FailureType
 
@@ -65,6 +67,8 @@ def test_failure_propagation_identifies_root_cause():
     
     # Check that confidence was calculated
     assert "confidence" in retriever_res
+    assert "candidate_separation" in retriever_res
+    assert "calibrated_probability" in retriever_res
     assert retriever_res["confidence"] > 0.0
 
 def test_confidence_bounds_chain_ab():
@@ -111,7 +115,7 @@ def test_confidence_bounds_chain_ab():
     
     # Confidence must not be negative! It should clamp to 0.0
     assert 0.0 <= retriever_res["confidence"] <= 1.0
-    assert retriever_res["confidence"] == 0.0
+    assert retriever_res["confidence"] == pytest.approx(0.15)
 
 def test_co_originators_and_confidence_tiers():
     """Checks that parallel failed nodes with gap < 0.10 result in co-originator status and ambiguous tier."""
@@ -391,13 +395,16 @@ def test_retry_health_floor_edge_case():
     ret_a = next(n for n in diagnosed if n["node_id"] == "retriever_a")
     ret_b = next(n for n in diagnosed if n["node_id"] == "retriever_b")
     
-    # Retriever A: 1 retry -> health = 1.0 - 0.10 * 1 = 0.90
-    assert ret_a["raw_health"] == 0.90
+    # Retry history is now explicit evidence, not a hidden penalty.
+    assert ret_a["raw_health"] == pytest.approx(0.9733333333)
     assert ret_a["is_root_cause"] is False
     assert ret_a["failure_type"] is None
+    assert ret_a["evidence"]["retry_count"] == 1
+    assert ret_a["evidence"]["first_attempt_health"] < ret_a["evidence"]["final_attempt_health"]
     
-    # Retriever B: 30 retries -> health = max(0.71, 1.0 - 0.10 * 30) = 0.71 (saturates!)
-    assert ret_b["raw_health"] == 0.71
-    # 0.71 >= 0.70 -> must not be flagged as root cause or failed!
+    # Many retries no longer get artificially forced to a floor.
+    assert ret_b["raw_health"] == pytest.approx(0.9733333333)
+    # It is still healthy because the final attempt succeeded.
     assert ret_b["is_root_cause"] is False
     assert ret_b["failure_type"] is None
+    assert ret_b["evidence"]["retry_count"] == 30

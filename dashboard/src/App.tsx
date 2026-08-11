@@ -24,8 +24,28 @@ interface Session {
 
 
 interface NodeRecommendation {
+  problem: string;
+  evidence: string;
+  recommended_action: string;
+  expected_effect: string;
+  priority: string;
+  confidence: number;
   suggestion: string;
   impact: string;
+}
+
+interface TraceEvidence {
+  retriever_similarity: number | null;
+  groundedness_ratio: number | null;
+  tool_margin: number | null;
+  latency: number;
+  json_valid: number;
+  instruction_following: number;
+  judge_mode: string;
+  retry_count?: number;
+  first_attempt_health?: number;
+  final_attempt_health?: number;
+  retry_latency_cost?: number;
 }
 
 interface TraceNode {
@@ -33,20 +53,27 @@ interface TraceNode {
   node_type: string;
   raw_health: number;
   adjusted_health: number;
+  overall_health: number;
+  metric_scores: Record<string, number | null>;
+  weakest_dimension: string | null;
+  weakest_dimension_score: number | null;
+  failed_dimensions: string[];
+  evaluation_status: string;
   is_root_cause: boolean;
   is_inherited_degradation: boolean;
   is_co_originator: boolean;
   parent_node_ids: string[];
-  evidence: {
-    retriever_similarity: number | null;
-    groundedness_ratio: number | null;
-    tool_margin: number | null;
-    latency: number;
-    json_valid: number;
-    instruction_following: number;
-    judge_mode: string;
-    retry_count?: number;
-  };
+  children_node_ids?: string[];
+  attribution_score?: number;
+  attribution_evidence?: Record<string, number>;
+  failure_type?: string | null;
+  candidate_separation?: number;
+  calibrated_probability?: number | null;
+  raw_score?: number;
+  calibration_method?: string | null;
+  calibration_status?: string | null;
+  calibration_version?: string | null;
+  evidence: TraceEvidence;
   confidence: number;
   confidence_tier: string;
   recommendations: NodeRecommendation[];
@@ -58,6 +85,19 @@ interface SessionDetail {
   passed: boolean;
   root_cause: {
     node_id: string;
+    node_type?: string;
+    failure_type?: string | null;
+    raw_health?: number;
+    overall_health?: number;
+    weakest_dimension?: string | null;
+    weakest_dimension_score?: number | null;
+    attribution_score?: number;
+    candidate_separation?: number;
+    calibrated_probability?: number | null;
+    raw_score?: number;
+    calibration_method?: string | null;
+    calibration_status?: string | null;
+    calibration_version?: string | null;
     confidence: number;
     confidence_tier: string;
   } | null;
@@ -239,6 +279,18 @@ function App() {
     } catch {
       return isoStr;
     }
+  };
+
+  const formatDimensionLabel = (label: string | null | undefined) => {
+    if (!label) return 'unknown';
+    return label.replace(/_/g, ' ');
+  };
+
+  const formatScore = (value: number | null | undefined, digits = 2) => {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+      return '—';
+    }
+    return value.toFixed(digits);
   };
 
   const getFailureLabel = (tag: string | null) => {
@@ -527,6 +579,9 @@ function App() {
                                   <Info size={12} /> Inherited Degradation
                                 </span>
                               )}
+                              <span className="badge-pill" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', backgroundColor: 'rgba(59,130,246,0.08)', color: 'var(--color-primary)', border: '1px solid rgba(59,130,246,0.25)' }}>
+                                Health {node.overall_health.toFixed(2)}
+                              </span>
                               {node.evidence.retry_count !== undefined && node.evidence.retry_count > 0 && (
                                 <span className="badge-pill retried" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'var(--color-warning)', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
                                   Retried {node.evidence.retry_count}x
@@ -551,6 +606,24 @@ function App() {
                               <span className="stat-label">Adjusted Health</span>
                               <span className="stat-value" style={{ color: node.adjusted_health < 0.70 ? 'var(--color-danger)' : (node.adjusted_health < 1.00 ? 'var(--color-warning)' : 'var(--color-success)') }}>
                                 {node.adjusted_health.toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="stat-group">
+                              <span className="stat-label">Weakest Dimension</span>
+                              <span className="stat-value" style={{ color: node.failed_dimensions.length > 0 ? 'var(--color-danger)' : 'var(--text-primary)' }}>
+                                {formatDimensionLabel(node.weakest_dimension)}
+                              </span>
+                            </div>
+                            <div className="stat-group">
+                              <span className="stat-label">Attribution</span>
+                              <span className="stat-value" style={{ color: 'var(--color-primary)' }}>
+                                {formatScore(node.attribution_score, 2)}
+                              </span>
+                            </div>
+                            <div className="stat-group">
+                              <span className="stat-label">Calibrated P</span>
+                              <span className="stat-value" style={{ color: node.calibration_status === 'complete' ? 'var(--color-success)' : 'var(--text-primary)' }}>
+                                {formatScore(node.calibrated_probability, 2)}
                               </span>
                             </div>
                           </div>
@@ -669,6 +742,9 @@ function App() {
                                           <Info size={12} /> Inherited Degradation
                                         </span>
                                       )}
+                                      <span className="badge-pill" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', backgroundColor: 'rgba(59,130,246,0.08)', color: 'var(--color-primary)', border: '1px solid rgba(59,130,246,0.25)' }}>
+                                        Health {node.overall_health.toFixed(2)}
+                                      </span>
                                       {node.evidence.retry_count !== undefined && node.evidence.retry_count > 0 && (
                                         <span className="badge-pill retried" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'var(--color-warning)', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
                                           Retried {node.evidence.retry_count}x
@@ -701,6 +777,24 @@ function App() {
                                         {node.adjusted_health.toFixed(2)}
                                       </span>
                                     </div>
+                                    <div className="stat-group">
+                                      <span className="stat-label">Weakest Dimension</span>
+                                      <span className="stat-value" style={{ color: node.failed_dimensions.length > 0 ? 'var(--color-danger)' : 'var(--text-primary)' }}>
+                                        {formatDimensionLabel(node.weakest_dimension)}
+                                      </span>
+                                    </div>
+                                    <div className="stat-group">
+                                      <span className="stat-label">Attribution</span>
+                                      <span className="stat-value" style={{ color: 'var(--color-primary)' }}>
+                                        {formatScore(node.attribution_score, 2)}
+                                      </span>
+                                    </div>
+                                    <div className="stat-group">
+                                      <span className="stat-label">Calibrated P</span>
+                                      <span className="stat-value" style={{ color: node.calibration_status === 'complete' ? 'var(--color-success)' : 'var(--text-primary)' }}>
+                                        {formatScore(node.calibrated_probability, 2)}
+                                      </span>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -728,6 +822,12 @@ function App() {
                       <p style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
                         The Root Cause Engine identified <strong>{rootNode.node_id}</strong> as the origin of the failure with <strong title={`${(rootNode.confidence * 100).toFixed(1)}% raw confidence`} style={{ borderBottom: '1px dotted rgba(255,255,255,0.4)', cursor: 'help' }}>{rootNode.confidence_tier} confidence</strong>.
                       </p>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
+                        <span className="badge-pill root-cause">Failure: {formatDimensionLabel(rootNode.failure_type || null)}</span>
+                        <span className="badge-pill">Overall health {formatScore(rootNode.overall_health, 2)}</span>
+                        <span className="badge-pill">Attribution {formatScore(rootNode.attribution_score, 2)}</span>
+                        <span className="badge-pill">Weakest {formatDimensionLabel(rootNode.weakest_dimension)}</span>
+                      </div>
                       
                       <div className="stat-group" style={{ alignItems: 'flex-start', borderTop: '1px solid var(--border-card)', paddingTop: '0.75rem', marginBottom: '1rem' }}>
                         <span className="stat-label">Measurable Evidence</span>
@@ -757,6 +857,12 @@ function App() {
                             </div>
                           )}
                           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <span>Failed Dimensions:</span>
+                            <strong style={{ color: rootNode.failed_dimensions.length > 0 ? 'var(--color-danger)' : 'var(--text-primary)' }}>
+                              {rootNode.failed_dimensions.length > 0 ? rootNode.failed_dimensions.map(formatDimensionLabel).join(', ') : 'none'}
+                            </strong>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                             <span>Node Latency Duration:</span>
                             <strong style={{ color: rootNode.evidence.latency > 2.0 ? 'var(--color-danger)' : 'var(--text-primary)' }}>
                               {rootNode.evidence.latency.toFixed(3)}s
@@ -774,6 +880,24 @@ function App() {
                               {rootNode.evidence.judge_mode}
                             </strong>
                           </div>
+                          {rootNode.evidence.retry_count !== undefined && rootNode.evidence.retry_count > 0 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <span>Retry Count:</span>
+                              <strong>{rootNode.evidence.retry_count} attempts</strong>
+                            </div>
+                          )}
+                          {rootNode.evidence.first_attempt_health !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <span>First Attempt Health:</span>
+                              <strong>{formatScore(rootNode.evidence.first_attempt_health, 2)}</strong>
+                            </div>
+                          )}
+                          {rootNode.evidence.final_attempt_health !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <span>Final Attempt Health:</span>
+                              <strong>{formatScore(rootNode.evidence.final_attempt_health, 2)}</strong>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -785,10 +909,15 @@ function App() {
                           </h4>
                           {rootNode.recommendations.map((rec, idx) => (
                             <div key={idx} className="rec-item">
-                              <span className={`rec-impact-badge ${rec.impact.toLowerCase()}`}>
-                                {rec.impact}
+                              <span className={`rec-impact-badge ${rec.priority.toLowerCase()}`}>
+                                {rec.priority.toUpperCase()}
                               </span>
-                              <p style={{ fontSize: '0.8rem', color: 'var(--text-primary)' }}>{rec.suggestion}</p>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                <strong style={{ fontSize: '0.8rem', color: 'var(--text-primary)' }}>{rec.problem}</strong>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>{rec.evidence}</p>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--text-primary)', margin: 0 }}>{rec.recommended_action}</p>
+                                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>{rec.expected_effect}</p>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -855,10 +984,10 @@ function App() {
                               </div>
                               {coNode.recommendations.map((rec: any, idx: number) => (
                                 <div key={idx} className="rec-item" style={{ marginBottom: '0.2rem', paddingBottom: 0, border: 'none' }}>
-                                  <span className={`rec-impact-badge ${rec.impact.toLowerCase()}`} style={{ fontSize: '0.65rem', padding: '0.1rem 0.3rem' }}>
-                                    {rec.impact}
+                                  <span className={`rec-impact-badge ${rec.priority.toLowerCase()}`} style={{ fontSize: '0.65rem', padding: '0.1rem 0.3rem' }}>
+                                    {rec.priority.toUpperCase()}
                                   </span>
-                                  <span style={{ fontSize: '0.75rem', marginLeft: '0.4rem', color: 'var(--text-primary)' }}>{rec.suggestion}</span>
+                                  <span style={{ fontSize: '0.75rem', marginLeft: '0.4rem', color: 'var(--text-primary)' }}>{rec.problem}</span>
                                 </div>
                               ))}
                             </div>
