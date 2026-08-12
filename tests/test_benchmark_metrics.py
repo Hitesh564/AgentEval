@@ -5,6 +5,7 @@ from agenteval.benchmark.metrics import (
     classification_metrics,
     top_k_accuracy,
     benchmark_summary,
+    bootstrap_metric_intervals,
     render_benchmark_markdown,
 )
 
@@ -110,6 +111,7 @@ def test_render_benchmark_markdown_mentions_key_metrics():
     assert "Confusion Matrix" in markdown
     assert "Per-Class Performance" in markdown
     assert "Support" in markdown
+    assert "Statistical Uncertainty" in markdown
 
 
 def test_benchmark_summary_omits_unavailable_confidence():
@@ -150,3 +152,15 @@ def test_benchmark_summary_reports_partial_confidence_coverage():
     assert report["confidence"]["coverage"] == pytest.approx(0.5)
     assert report["confidence"]["calibrated_count"] == 1
     assert report["confidence"]["total_count"] == 2
+
+
+def test_bootstrap_metric_intervals_is_deterministic():
+    y_true = ["retriever", "planner", "generator", "none"]
+    y_pred = ["retriever", "planner", "planner", "none"]
+
+    first = bootstrap_metric_intervals(y_true, y_pred, seed=13, n_bootstrap=250)
+    second = bootstrap_metric_intervals(y_true, y_pred, seed=13, n_bootstrap=250)
+
+    assert first == second
+    assert first["metrics"]["accuracy"]["point"] == pytest.approx(0.75)
+    assert first["metrics"]["macro_f1"]["lower"] <= first["metrics"]["macro_f1"]["point"] <= first["metrics"]["macro_f1"]["upper"]

@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from agenteval.eval.calibration import brier_score, expected_calibration_error
 
 
@@ -194,10 +196,78 @@ def confidence_metrics(y_true: Sequence[str], y_pred: Sequence[str], confidence:
     }
 
 
+def bootstrap_metric_intervals(
+    y_true: Sequence[str],
+    y_pred: Sequence[str],
+    *,
+    labels: Optional[Sequence[str]] = None,
+    groups: Optional[Sequence[str]] = None,
+    n_bootstrap: int = 1000,
+    seed: int = 0,
+) -> Dict[str, Any]:
+    if len(y_true) != len(y_pred):
+        raise ValueError("Labels and predictions must have the same length")
+    if not y_true or n_bootstrap <= 0:
+        return {
+            "n_bootstrap": 0,
+            "seed": seed,
+            "metrics": {},
+        }
+
+    metric_labels = list(labels) if labels is not None else sorted(set(y_true) | set(y_pred))
+    rng = random.Random(seed)
+    n = len(y_true)
+    if groups is not None and len(groups) != n:
+        raise ValueError("groups must have the same length as y_true and y_pred")
+
+    grouped_indices: Dict[str, List[int]] = {}
+    if groups is not None:
+        for idx, group in enumerate(groups):
+            grouped_indices.setdefault(str(group), []).append(idx)
+        bootstrap_units = list(grouped_indices.values())
+    else:
+        bootstrap_units = [[idx] for idx in range(n)]
+    samples = {
+        "accuracy": [],
+        "macro_f1": [],
+        "balanced_accuracy": [],
+    }
+
+    for _ in range(n_bootstrap):
+        chosen_units = [bootstrap_units[rng.randrange(len(bootstrap_units))] for _ in range(len(bootstrap_units))]
+        indices = [idx for unit in chosen_units for idx in unit]
+        sample_true = [y_true[idx] for idx in indices]
+        sample_pred = [y_pred[idx] for idx in indices]
+        sample_metrics = classification_metrics(sample_true, sample_pred, labels=metric_labels)
+        samples["accuracy"].append(sample_metrics["accuracy"])
+        samples["macro_f1"].append(sample_metrics["macro_f1"])
+        samples["balanced_accuracy"].append(sample_metrics["balanced_accuracy"])
+
+    point_metrics = classification_metrics(y_true, y_pred, labels=metric_labels)
+
+    def _interval(values: Sequence[float]) -> Dict[str, float]:
+        arr = np.asarray(list(values), dtype=float)
+        lower, upper = np.percentile(arr, [2.5, 97.5])
+        return {"lower": float(lower), "upper": float(upper)}
+
+    return {
+        "n_bootstrap": n_bootstrap,
+        "seed": seed,
+        "metrics": {
+            name: {
+                "point": point_metrics[name],
+                **_interval(values),
+            }
+            for name, values in samples.items()
+        },
+    }
+
+
 def benchmark_summary(
     records: Sequence[BenchmarkRecord],
     *,
     seed: int = 0,
+    n_bootstrap: int = 1000,
 ) -> Dict[str, Any]:
     y_true = [record.true_agent for record in records]
     y_pred = [record.pred_agent for record in records]
@@ -248,6 +318,14 @@ def benchmark_summary(
     confidence_report["coverage"] = calibrated_coverage if calibrated_confidence else 0.0
     confidence_report["calibrated_count"] = len(calibrated_confidence)
     confidence_report["total_count"] = len(records)
+    bootstrap = bootstrap_metric_intervals(
+        y_true,
+        y_pred,
+        labels=metrics["confusion_matrix"]["labels"],
+        groups=[record.case_id for record in records],
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+    )
     return {
         "metrics": metrics,
         "step_metrics": step_metrics,
@@ -256,6 +334,9 @@ def benchmark_summary(
         "baselines": baselines,
         "top_k_accuracy": top_k_acc,
         "confidence": confidence_report,
+        "bootstrap": bootstrap,
+        "record_count": len(records),
+        "case_count": len({record.case_id for record in records}),
         "label_distribution": {label: metrics["support"].get(label, 0) for label in metrics["confusion_matrix"]["labels"]},
         "records": [record.__dict__ for record in records],
     }
@@ -343,6 +424,15 @@ def render_benchmark_markdown(report: Dict[str, Any], *, title: str = "AgentEval
         lines.extend(["", "## Calibration Results"])
         for line in report["calibration"]:
             lines.append(line)
+    bootstrap = report.get("bootstrap") or {}
+    if bootstrap.get("metrics"):
+        lines.extend(["", "## Statistical Uncertainty"])
+        lines.append(f"- Cases / records: {report.get('case_count', report.get('record_count', 0))} / {report.get('record_count', 0)}")
+        lines.append(f"- Bootstrap samples: {bootstrap.get('n_bootstrap', 0)}")
+        for name, metric in bootstrap["metrics"].items():
+            lines.append(
+                f"- {name.replace('_', ' ').title()}: {metric['point']:.3f} [95% CI: {metric['lower']:.3f}-{metric['upper']:.3f}]"
+            )
     lines.extend(["", "## Confusion Matrix"])
     labels = metrics["confusion_matrix"]["labels"]
     matrix = metrics["confusion_matrix"]["matrix"]

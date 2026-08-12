@@ -1,10 +1,23 @@
-import os
-import os
 import argparse
+import json
+import os
 import sqlite3
+import subprocess
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from agenteval.benchmark.metrics import BenchmarkRecord, benchmark_summary, render_benchmark_markdown
 from agenteval.utils.miniyaml import load_structured_data
+
+
+def _get_git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.getcwd(),
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 def load_fixtures(fixtures_path: str = "examples/fixtures/test_cases.yaml") -> List[Dict[str, Any]]:
     """Loads fixtures from YAML."""
@@ -27,6 +40,8 @@ def evaluate_runs(
     fixtures_path: str = "examples/fixtures/test_cases.yaml",
     user_id: Optional[str] = None,
     causal_origin_weighting: bool = True,
+    seed: int = 0,
+    n_bootstrap: int = 1000,
 ) -> Dict[str, Any]:
     """Computes averages of the six metrics and attributes root causes."""
     from agenteval.root_cause.engine import RootCauseEngine
@@ -378,7 +393,7 @@ def evaluate_runs(
         
     accuracy = (correct_attributions / diagnosed_count) if diagnosed_count > 0 else None
     pass_rate = (passed_runs / len(session_ids)) if session_ids else 0.0
-    benchmark = benchmark_summary(benchmark_records) if benchmark_records else None
+    benchmark = benchmark_summary(benchmark_records, seed=seed, n_bootstrap=n_bootstrap) if benchmark_records else None
     
     return {
         "averages": averages,
@@ -402,6 +417,7 @@ def main():
     compare_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
     compare_parser.add_argument("--mode", type=str, choices=["replay", "live"], default="replay", help="Evaluation mode (replay or live)")
     compare_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
+    compare_parser.add_argument("--seed", type=int, default=0, help="Deterministic seed for baseline sampling")
 
     benchmark_parser = subparsers.add_parser("benchmark", help="Run benchmark metrics and baselines on stored traces")
     benchmark_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
@@ -409,6 +425,8 @@ def main():
     benchmark_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
     benchmark_parser.add_argument("--prefix", type=str, default="", help="Optional session prefix filter")
     benchmark_parser.add_argument("--output", type=str, default="reports/benchmark_report.md", help="Markdown output path")
+    benchmark_parser.add_argument("--seed", type=int, default=0, help="Deterministic seed for baselines and bootstrap CIs")
+    benchmark_parser.add_argument("--bootstrap-samples", type=int, default=1000, help="Bootstrap samples for confidence intervals")
 
     args = parser.parse_args()
     
@@ -452,8 +470,8 @@ def main():
             print(f"Please run the fixed agent calibration first to generate runs for comparison.")
             return
 
-        res_a = evaluate_runs(sessions_a, db_path, args.version_a, mode=args.mode, fixtures_path=args.fixtures)
-        res_b = evaluate_runs(sessions_b, db_path, args.version_b, mode=args.mode, fixtures_path=args.fixtures)
+        res_a = evaluate_runs(sessions_a, db_path, args.version_a, mode=args.mode, fixtures_path=args.fixtures, seed=args.seed)
+        res_b = evaluate_runs(sessions_b, db_path, args.version_b, mode=args.mode, fixtures_path=args.fixtures, seed=args.seed)
 
         # Print comparison report
         print(f"\n================== REGRESSION REPORT ==================")
@@ -599,7 +617,17 @@ def main():
             print("Error: No sessions found for benchmark run.")
             return
 
-        result = evaluate_runs(sessions, db_path, version="benchmark", mode=args.mode, fixtures_path=args.fixtures)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        git_commit = _get_git_commit()
+        result = evaluate_runs(
+            sessions,
+            db_path,
+            version="benchmark",
+            mode=args.mode,
+            fixtures_path=args.fixtures,
+            seed=args.seed,
+            n_bootstrap=args.bootstrap_samples,
+        )
         no_origin_result = evaluate_runs(
             sessions,
             db_path,
@@ -607,6 +635,8 @@ def main():
             mode=args.mode,
             fixtures_path=args.fixtures,
             causal_origin_weighting=False,
+            seed=args.seed,
+            n_bootstrap=args.bootstrap_samples,
         )
         benchmark = result.get("benchmark")
         benchmark_no_origin = no_origin_result.get("benchmark")
@@ -617,8 +647,13 @@ def main():
         label_distribution = benchmark.get("label_distribution") or {}
         report_bundle = dict(benchmark)
         report_bundle["dataset_lines"] = [
-            f"- Source traces: {len(result.get('benchmark', {}).get('records', []))} evaluated benchmark records from {args.fixtures}.",
+            f"- Source traces: {result.get('benchmark', {}).get('record_count', len(result.get('benchmark', {}).get('records', [])))} evaluated benchmark records from {args.fixtures}.",
+            f"- Unique case IDs: {result.get('benchmark', {}).get('case_count', 0)}.",
             f"- Benchmark mode: {args.mode}.",
+            f"- Seed: {args.seed}.",
+            f"- Bootstrap samples: {args.bootstrap_samples}.",
+            f"- Generated at (UTC): {generated_at}.",
+            f"- Git commit: {git_commit}.",
             "- Who&When adapter evaluation is reported separately and is not included in this benchmark run unless explicitly executed.",
         ]
         report_bundle["protocol_lines"] = [
@@ -664,8 +699,29 @@ def main():
         ]
         report_bundle["calibration"] = [
             "- Dedicated calibration workflow available at `python -m scripts.calibrate`.",
-            "- This benchmark run does not fit a new calibrator; it only reports whether calibrated confidence values were available in the evaluated records.",
         ]
+        calibration_report_path = os.path.join("artifacts", "calibration_report.json")
+        if os.path.exists(calibration_report_path):
+            with open(calibration_report_path, "r", encoding="utf-8") as handle:
+                calibration_report = json.load(handle)
+            split = calibration_report.get("split") or {}
+            threshold = calibration_report.get("threshold") or {}
+            fit = threshold.get("fit") or {}
+            holdout = threshold.get("holdout") or {}
+            confidence = calibration_report.get("confidence") or {}
+            report_bundle["calibration"].extend([
+                f"- Threshold calibration fit on a benchmark-derived dataset with {split.get('calibration_size', 'n/a')} calibration examples and {split.get('holdout_size', 'n/a')} holdout examples.",
+                f"- Fit threshold: {fit.get('threshold', 'n/a'):.3f}" if isinstance(fit.get("threshold"), (int, float)) else f"- Fit threshold: {fit.get('threshold', 'n/a')}",
+                f"- Holdout F1: {holdout.get('f1', 'n/a'):.3f}" if isinstance(holdout.get("f1"), (int, float)) else f"- Holdout F1: {holdout.get('f1', 'n/a')}",
+                f"- Holdout ROC-AUC: {holdout.get('roc_auc', 'n/a'):.3f}" if isinstance(holdout.get("roc_auc"), (int, float)) else f"- Holdout ROC-AUC: {holdout.get('roc_auc', 'n/a')}",
+                f"- Holdout PR-AUC: {holdout.get('pr_auc', 'n/a'):.3f}" if isinstance(holdout.get("pr_auc"), (int, float)) else f"- Holdout PR-AUC: {holdout.get('pr_auc', 'n/a')}",
+                f"- Confidence calibration fit available: {confidence.get('fit') is not None}.",
+                "- Confidence calibration remains pending because the exported benchmark-derived dataset does not include labeled confidence scores.",
+            ])
+        else:
+            report_bundle["calibration"].append(
+                "- This benchmark run does not fit a new calibrator; it only reports whether calibrated confidence values were available in the evaluated records."
+            )
         report_bundle["limitations"] = [
             "- This report is based on the stored benchmark traces in the repository, not a broad external evaluation set.",
             "- Confidence calibration metrics may apply only to the calibrated subset, so coverage should be checked alongside ECE and Brier score.",

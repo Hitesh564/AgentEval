@@ -1,0 +1,462 @@
+{
+  "dataset": {
+    "calibration_example_count": 90,
+    "fixtures": "examples/fixtures/test_cases.yaml",
+    "mode": "replay",
+    "record_count": 983,
+    "seed": 13,
+    "source": "benchmark_traces"
+  },
+  "examples": [
+    {
+      "case_id": "case_001",
+      "failure_label": 1,
+      "health": 0.8841112666666666
+    },
+    {
+      "case_id": "case_002",
+      "failure_label": 1,
+      "health": 0.8841666666666667
+    },
+    {
+      "case_id": "case_003",
+      "failure_label": 1,
+      "health": 0.8841666666666667
+    },
+    {
+      "case_id": "case_004",
+      "failure_label": 1,
+      "health": 0.8841269166666667
+    },
+    {
+      "case_id": "case_005",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_006",
+      "failure_label": 1,
+      "health": 0.9932799
+    },
+    {
+      "case_id": "case_007",
+      "failure_label": 1,
+      "health": 0.9932592708333333
+    },
+    {
+      "case_id": "case_008",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_009",
+      "failure_label": 1,
+      "health": 0.9152083333333333
+    },
+    {
+      "case_id": "case_010",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_011",
+      "failure_label": 1,
+      "health": 0.9151608489583334
+    },
+    {
+      "case_id": "case_012",
+      "failure_label": 1,
+      "health": 0.9152083333333333
+    },
+    {
+      "case_id": "case_013",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_014",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_015",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_016",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_017",
+      "failure_label": 1,
+      "health": 0.8965
+    },
+    {
+      "case_id": "case_018",
+      "failure_label": 1,
+      "health": 0.8965
+    },
+    {
+      "case_id": "case_019",
+      "failure_label": 1,
+      "health": 0.8965
+    },
+    {
+      "case_id": "case_020",
+      "failure_label": 1,
+      "health": 0.8964594499999999
+    },
+    {
+      "case_id": "case_021",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_022",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_023",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_024",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_025",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_026",
+      "failure_label": 1,
+      "health": 0.9266156666666666
+    },
+    {
+      "case_id": "case_027",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_028",
+      "failure_label": 1,
+      "health": 0.9266163416666666
+    },
+    {
+      "case_id": "case_029",
+      "failure_label": 1,
+      "health": 0.6718333333333333
+    },
+    {
+      "case_id": "case_030",
+      "failure_label": 1,
+      "health": 0.6718333333333333
+    },
+    {
+      "case_id": "case_031",
+      "failure_label": 1,
+      "health": 0.9151814583333333
+    },
+    {
+      "case_id": "case_032",
+      "failure_label": 0,
+      "health": 0.9932537333333333
+    },
+    {
+      "case_id": "case_033",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_034",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_035",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_036",
+      "failure_label": 0,
+      "health": 0.9932829333333333
+    },
+    {
+      "case_id": "case_037",
+      "failure_label": 0,
+      "health": 0.9932321708333334
+    },
+    {
+      "case_id": "case_038",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_039",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_040",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_041",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_042",
+      "failure_label": 0,
+      "health": 0.9932158
+    },
+    {
+      "case_id": "case_043",
+      "failure_label": 0,
+      "health": 0.9932831333333333
+    },
+    {
+      "case_id": "case_044",
+      "failure_label": 1,
+      "health": 0.8966003753472223
+    },
+    {
+      "case_id": "case_045",
+      "failure_label": 1,
+      "health": 0.8967222222222222
+    },
+    {
+      "case_id": "case_001",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_002",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_003",
+      "failure_label": 1,
+      "health": 0.9932985520833333
+    },
+    {
+      "case_id": "case_004",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_005",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_006",
+      "failure_label": 1,
+      "health": 0.9933028583333333
+    },
+    {
+      "case_id": "case_007",
+      "failure_label": 1,
+      "health": 0.9933077083333333
+    },
+    {
+      "case_id": "case_008",
+      "failure_label": 1,
+      "health": 0.993211
+    },
+    {
+      "case_id": "case_009",
+      "failure_label": 1,
+      "health": 0.9152083333333333
+    },
+    {
+      "case_id": "case_010",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_011",
+      "failure_label": 1,
+      "health": 0.9150776927083333
+    },
+    {
+      "case_id": "case_012",
+      "failure_label": 1,
+      "health": 0.9150288333333333
+    },
+    {
+      "case_id": "case_013",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_014",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_015",
+      "failure_label": 1,
+      "health": 0.7475
+    },
+    {
+      "case_id": "case_016",
+      "failure_label": 1,
+      "health": 0.74733810625
+    },
+    {
+      "case_id": "case_017",
+      "failure_label": 1,
+      "health": 0.8965
+    },
+    {
+      "case_id": "case_018",
+      "failure_label": 1,
+      "health": 0.8964053125
+    },
+    {
+      "case_id": "case_019",
+      "failure_label": 1,
+      "health": 0.896473675
+    },
+    {
+      "case_id": "case_020",
+      "failure_label": 1,
+      "health": 0.8965
+    },
+    {
+      "case_id": "case_021",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_022",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_023",
+      "failure_label": 1,
+      "health": 0.6745580583333333
+    },
+    {
+      "case_id": "case_024",
+      "failure_label": 1,
+      "health": 0.6745833333333333
+    },
+    {
+      "case_id": "case_025",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_026",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_027",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_028",
+      "failure_label": 1,
+      "health": 0.9266666666666666
+    },
+    {
+      "case_id": "case_029",
+      "failure_label": 1,
+      "health": 0.9932829333333333
+    },
+    {
+      "case_id": "case_030",
+      "failure_label": 1,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_031",
+      "failure_label": 1,
+      "health": 0.9150739999999999
+    },
+    {
+      "case_id": "case_032",
+      "failure_label": 0,
+      "health": 0.9933079833333334
+    },
+    {
+      "case_id": "case_033",
+      "failure_label": 0,
+      "health": 0.9932661666666667
+    },
+    {
+      "case_id": "case_034",
+      "failure_label": 0,
+      "health": 0.9933140333333333
+    },
+    {
+      "case_id": "case_035",
+      "failure_label": 0,
+      "health": 0.9932156333333333
+    },
+    {
+      "case_id": "case_036",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_037",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_038",
+      "failure_label": 0,
+      "health": 0.9931732833333333
+    },
+    {
+      "case_id": "case_039",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_040",
+      "failure_label": 0,
+      "health": 0.9930287135416667
+    },
+    {
+      "case_id": "case_041",
+      "failure_label": 0,
+      "health": 0.9932828833333334
+    },
+    {
+      "case_id": "case_042",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_043",
+      "failure_label": 0,
+      "health": 0.9933333333333333
+    },
+    {
+      "case_id": "case_044",
+      "failure_label": 1,
+      "health": 0.8966034222222221
+    },
+    {
+      "case_id": "case_045",
+      "failure_label": 1,
+      "health": 0.8966747378472222
+    }
+  ]
+}

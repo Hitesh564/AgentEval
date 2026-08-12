@@ -107,6 +107,7 @@ def run_calibration_workflow(
     seed: int = 0,
     threshold_output: Optional[str] = None,
     confidence_output: Optional[str] = None,
+    report_output: Optional[str] = None,
     confidence_method: str = "temperature",
     confidence_version: str = "calibration-workflow",
 ) -> Dict[str, Any]:
@@ -210,6 +211,7 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Path to labeled calibration examples (.json/.yaml)")
     parser.add_argument("--threshold-output", default="artifacts/threshold_calibration.json", help="Path to save the threshold artifact")
     parser.add_argument("--confidence-output", default="artifacts/confidence_calibration.json", help="Path to save the confidence artifact")
+    parser.add_argument("--report-output", default="artifacts/calibration_report.json", help="Path to save the full calibration report")
     parser.add_argument("--calibration-ratio", type=float, default=0.7, help="Fraction of examples used for fitting")
     parser.add_argument("--seed", type=int, default=0, help="Deterministic shuffle seed")
     parser.add_argument("--confidence-method", choices=["temperature", "isotonic"], default="temperature", help="Confidence calibration method")
@@ -226,9 +228,15 @@ def main() -> None:
         seed=args.seed,
         threshold_output=args.threshold_output,
         confidence_output=args.confidence_output,
+        report_output=args.report_output,
         confidence_method=args.confidence_method,
         confidence_version=args.confidence_version,
     )
+
+    if args.report_output:
+        Path(args.report_output).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.report_output, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2, sort_keys=True)
 
     print(json.dumps(result, indent=2, sort_keys=True))
 

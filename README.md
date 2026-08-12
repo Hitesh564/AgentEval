@@ -1,6 +1,6 @@
 # AgentEval
 
-AgentEval is an open-source evaluation and root-cause diagnosis engine for AI agents. It goes beyond simple black-box evaluation to pinpoint *why* and *where* agents fail in complex multi-step pipelines. By analyzing metrics across agent transitions, AgentEval traces failures back to their earliest upstream origin.
+AgentEval is an open-source evaluation and evidence-based failure-attribution engine for AI agents. It combines trace instrumentation, node-level evaluation, and cross-session diagnosis to show *where* a pipeline failed and *why* that failure likely propagated. In the validated repository workflow, AgentEval supports controlled benchmark evaluation, baseline comparison, ablation analysis, calibration tooling, and an external Who&When adapter.
 
 ---
 
@@ -142,10 +142,11 @@ agenteval compare calib fixed --fixtures examples/fixtures/multi_agent_test_case
 - **Multi-Agent Chains**: Session-level coordinator and worker hierarchies.
 
 ### Diagnostic Results
-- **Validated benchmark run**: On `examples/fixtures/test_cases.yaml`, the regenerated benchmark report showed **71.1% accuracy**, **67.2% macro-F1**, **74.2% balanced accuracy**, and **68.9% top-k accuracy**.
+- **Internal benchmark**: On the controlled `examples/fixtures/test_cases.yaml` benchmark, the regenerated report showed **71.1% accuracy** with **95% bootstrap CI: 58.9% to 83.4%**, **67.2% macro-F1** with **95% CI: 54.1% to 82.0%**, and **74.2% balanced accuracy** with **95% CI: 60.8% to 83.5%**.
 - **Ablation result**: In the same report, `v2_full` outperformed `v2_no_causal_origin` on accuracy, macro-F1, and balanced accuracy.
-- **Who&When adapter**: The repository includes a structured adapter for `Kevin355/Who_and_When`, but no fresh Who&When dataset run was executed in this validation pass, so no numeric result is claimed here.
-- **Validation status**: The current codebase passed `51` tests and skipped `2` in the workspace test run.
+- **External Who&When validation**: The adapter was executed on **15 cases** from `Kevin355/Who_and_When` and produced **20.0% agent accuracy**, **0.0% step accuracy**, **6.7% exact match**, **0.143 macro-F1**, **0.111 balanced accuracy**, and **20.0% top-k agent accuracy**.
+- **Calibration validation**: A benchmark-derived calibration dataset with **90 examples** was exported from stored traces. Threshold calibration on a **63/27** calibration/holdout split produced **threshold = 1.0**, **holdout F1 = 0.800**, **holdout ROC-AUC = 0.898**, and **holdout PR-AUC = 0.982**. Confidence calibration remains pending because that exported dataset does not include labeled confidence targets.
+- **Validation status**: The current codebase passed **53** tests and skipped **2** in the workspace test run.
 
 ### Multi-User Scope Constraints
 - **In-Scope**: API-key HTTP headers, SHA-256 hashed keys in SQL, and query isolation scoping on traces and session links.
@@ -157,13 +158,13 @@ agenteval compare calib fixed --fixtures examples/fixtures/multi_agent_test_case
 - **Framework integration**: Automatic hooks exist for LangGraph/LangChain callbacks; other frameworks require manual SDK tracing wrappers.
 - **Benchmark scope**: Reported numbers come from stored fixtures and selected adapter subsets, not from a broad external benchmark suite.
 - **Causal scope**: The root-cause engine is evidence-based attribution, not intervention-based causal inference.
-- **Calibration scope**: Confidence metrics reflect the calibrated subset when calibration labels are available, so coverage should be checked alongside ECE and Brier score.
+- **Calibration scope**: Threshold calibration is validated on a benchmark-derived split, but confidence calibration is still pending because the exported dataset has no labeled confidence targets.
 
 ---
 
 ## Verified Test Artifacts
 
-- **Full test suite**: `51 passed, 2 skipped`
+- **Full test suite**: `53 passed, 2 skipped`
 - **Benchmark report**: Regenerated successfully from `examples/fixtures/test_cases.yaml`
-- **Calibration workflow**: Code path exists and is covered by tests, but no real calibration dataset was executed in this validation pass
-- **Who&When**: Adapter is implemented and test-covered, but no fresh dataset run was executed in this validation pass
+- **Calibration workflow**: Threshold calibration was executed on a benchmark-derived labeled export and holdout metrics were reported
+- **Who&When**: The adapter was executed on 15 cases and produced real external-validation metrics

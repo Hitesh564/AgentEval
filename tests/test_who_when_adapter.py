@@ -92,3 +92,29 @@ def test_who_when_aggregate_records_includes_step_metrics():
     assert summary["exact_match"] == 0.5
     assert summary["top_k_agent_accuracy"] == 1.0
     assert summary["assumptions"]
+
+
+def test_who_when_prediction_is_invariant_to_ground_truth_label_changes():
+    base_item = {
+        "question_ID": "1",
+        "question": "Question?",
+        "mistake_agent": "assistant",
+        "mistake_step": "assistant",
+        "history": [
+            {"role": "human", "content": "Hi"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "human", "content": "More"},
+            {"role": "assistant", "content": "Wrong answer"},
+        ],
+    }
+    changed_labels = dict(base_item)
+    changed_labels["mistake_agent"] = "orchestrator"
+    changed_labels["mistake_step"] = "step_99"
+
+    base_record = evaluate_case(base_item, store=FakeStore(), cross_engine=FakeCrossEngine(), user_id="u")
+    changed_record = evaluate_case(changed_labels, store=FakeStore(), cross_engine=FakeCrossEngine(), user_id="u")
+
+    assert base_record.predicted_agent == changed_record.predicted_agent
+    assert base_record.predicted_step == changed_record.predicted_step
+    assert base_record.agent_correct != changed_record.agent_correct
+    assert base_record.step_correct != changed_record.step_correct

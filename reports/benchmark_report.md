@@ -2,7 +2,12 @@
 
 ## Dataset
 - Source traces: 90 evaluated benchmark records from examples/fixtures/test_cases.yaml.
+- Unique case IDs: 45.
 - Benchmark mode: replay.
+- Seed: 13.
+- Bootstrap samples: 1000.
+- Generated at (UTC): 2026-08-12T13:55:45.588218+00:00.
+- Git commit: 67c86e7.
 - Who&When adapter evaluation is reported separately and is not included in this benchmark run unless explicitly executed.
 
 ## Evaluation Protocol
@@ -27,7 +32,7 @@
 - ambiguous: 4
 
 ## Baselines
-- random: accuracy=0.200, macro_f1=0.190, balanced_accuracy=0.213
+- random: accuracy=0.222, macro_f1=0.178, balanced_accuracy=0.176
 - majority: accuracy=0.267, macro_f1=0.084, balanced_accuracy=0.200
 - last_failure: accuracy=0.533, macro_f1=0.467, balanced_accuracy=0.436
 - v1: accuracy=0.667, macro_f1=0.566, balanced_accuracy=0.542
@@ -48,7 +53,20 @@
 
 ## Calibration Results
 - Dedicated calibration workflow available at `python -m scripts.calibrate`.
-- This benchmark run does not fit a new calibrator; it only reports whether calibrated confidence values were available in the evaluated records.
+- Threshold calibration fit on a benchmark-derived dataset with 63 calibration examples and 27 holdout examples.
+- Fit threshold: 1.000
+- Holdout F1: 0.800
+- Holdout ROC-AUC: 0.898
+- Holdout PR-AUC: 0.982
+- Confidence calibration fit available: False.
+- Confidence calibration remains pending because the exported benchmark-derived dataset does not include labeled confidence scores.
+
+## Statistical Uncertainty
+- Cases / records: 45 / 90
+- Bootstrap samples: 1000
+- Accuracy: 0.711 [95% CI: 0.589-0.834]
+- Macro F1: 0.672 [95% CI: 0.541-0.820]
+- Balanced Accuracy: 0.742 [95% CI: 0.608-0.835]
 
 ## Confusion Matrix
 | true \ pred | retriever | planner | generator | none | ambiguous |
