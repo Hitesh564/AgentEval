@@ -11,6 +11,7 @@ class CrossSessionEngine:
         mode: str = "replay",
         confidence_calibration_path: Optional[str] = None,
         threshold_calibration_path: Optional[str] = None,
+        causal_origin_weighting: bool = True,
     ):
         self.db_path = db_path
         self.store = TraceStore(db_path=db_path)
@@ -19,6 +20,7 @@ class CrossSessionEngine:
             mode=mode,
             confidence_calibration_path=confidence_calibration_path,
             threshold_calibration_path=threshold_calibration_path,
+            causal_origin_weighting=causal_origin_weighting,
         )
 
     def diagnose_chain(self, session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:

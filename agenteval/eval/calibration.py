@@ -443,8 +443,9 @@ def calibrate_threshold(
     calibration_version: str,
 ) -> CalibrationResult:
     threshold, pr = select_threshold(values, labels)
-    roc = roc_auc_score(labels, values)
-    pr_auc = pr_auc_score(labels, values)
+    failure_scores = [1.0 - float(v) for v in values]
+    roc = roc_auc_score(labels, failure_scores)
+    pr_auc = pr_auc_score(labels, failure_scores)
     return CalibrationResult(
         metric=metric,
         threshold=threshold,

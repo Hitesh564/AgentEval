@@ -7,8 +7,13 @@ import hashlib
 from typing import Dict, Any, List, Optional, Sequence
 from datetime import datetime, timezone
 
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
 
 # Import litellm for LLM-judge metrics
 try:

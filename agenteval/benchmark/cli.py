@@ -2,24 +2,38 @@ import os
 import os
 import argparse
 import sqlite3
-import yaml
 from typing import Dict, Any, List, Optional
-from agenteval.eval.metrics import EvaluationEngine
 from agenteval.benchmark.metrics import BenchmarkRecord, benchmark_summary, render_benchmark_markdown
-from agenteval.root_cause.engine import RootCauseEngine
-from agenteval.sdk.storage import TraceStore
+from agenteval.utils.miniyaml import load_structured_data
 
 def load_fixtures(fixtures_path: str = "examples/fixtures/test_cases.yaml") -> List[Dict[str, Any]]:
     """Loads fixtures from YAML."""
     if not os.path.exists(fixtures_path):
         return []
-    with open(fixtures_path, "r") as f:
-        return yaml.safe_load(f)
+    data = load_structured_data(fixtures_path)
+    if isinstance(data, dict) and "examples" in data:
+        data = data["examples"]
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise ValueError("Fixture file must contain a list of cases or an {examples: [...]} object")
+    return data
 
-def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", mode: str = "replay", fixtures_path: str = "examples/fixtures/test_cases.yaml", user_id: Optional[str] = None) -> Dict[str, Any]:
+def evaluate_runs(
+    session_ids: List[str],
+    db_path: str,
+    version: str = "calib",
+    mode: str = "replay",
+    fixtures_path: str = "examples/fixtures/test_cases.yaml",
+    user_id: Optional[str] = None,
+    causal_origin_weighting: bool = True,
+) -> Dict[str, Any]:
     """Computes averages of the six metrics and attributes root causes."""
+    from agenteval.root_cause.engine import RootCauseEngine
+    from agenteval.sdk.storage import TraceStore
+
     store = TraceStore(db_path=db_path)
-    rc_engine = RootCauseEngine(db_path=db_path, mode=mode)
+    rc_engine = RootCauseEngine(db_path=db_path, mode=mode, causal_origin_weighting=causal_origin_weighting)
     
     metrics_summary = {
         "instruction_following": [],
@@ -145,7 +159,7 @@ def evaluate_runs(session_ids: List[str], db_path: str, version: str = "calib", 
     is_multi_agent = "multi_agent" in fixtures_path
     if is_multi_agent:
         from agenteval.root_cause.cross_session import CrossSessionEngine
-        cross_engine = CrossSessionEngine(db_path=db_path, mode=mode)
+        cross_engine = CrossSessionEngine(db_path=db_path, mode=mode, causal_origin_weighting=causal_origin_weighting)
         
     for session_id in session_ids:
         if is_multi_agent:
@@ -399,6 +413,8 @@ def main():
     args = parser.parse_args()
     
     if args.command == "compare":
+        from agenteval.sdk.storage import TraceStore
+
         db_path = args.db
         if not os.path.exists(db_path):
             print(f"Error: Database file not found at {db_path}")
@@ -568,6 +584,8 @@ def main():
                 )
 
     elif args.command == "benchmark":
+        from agenteval.sdk.storage import TraceStore
+
         db_path = args.db
         if not os.path.exists(db_path):
             print(f"Error: Database file not found at {db_path}")
@@ -582,12 +600,79 @@ def main():
             return
 
         result = evaluate_runs(sessions, db_path, version="benchmark", mode=args.mode, fixtures_path=args.fixtures)
+        no_origin_result = evaluate_runs(
+            sessions,
+            db_path,
+            version="benchmark-no-origin",
+            mode=args.mode,
+            fixtures_path=args.fixtures,
+            causal_origin_weighting=False,
+        )
         benchmark = result.get("benchmark")
-        if not benchmark:
+        benchmark_no_origin = no_origin_result.get("benchmark")
+        if not benchmark or not benchmark_no_origin:
             print("Error: Benchmark summary could not be generated.")
             return
 
-        report_md = render_benchmark_markdown(benchmark, title="AgentEval Benchmark Report")
+        label_distribution = benchmark.get("label_distribution") or {}
+        report_bundle = dict(benchmark)
+        report_bundle["dataset_lines"] = [
+            f"- Source traces: {len(result.get('benchmark', {}).get('records', []))} evaluated benchmark records from {args.fixtures}.",
+            f"- Benchmark mode: {args.mode}.",
+            "- Who&When adapter evaluation is reported separately and is not included in this benchmark run unless explicitly executed.",
+        ]
+        report_bundle["protocol_lines"] = [
+            "- Version A (baseline) and Version B (current) are derived from stored traces and fixture labels.",
+            "- Balanced accuracy averages only over classes with non-zero ground-truth support.",
+            "- Macro-F1 follows the same support-aware class set used for the final report.",
+            "- Threshold calibration reports use failure score = 1 - health for ROC-AUC and PR-AUC.",
+        ]
+        report_bundle["ablation"] = [
+            {
+                "variant": "last_failure",
+                "accuracy": benchmark["baseline_metrics"]["last_failure"]["accuracy"],
+                "macro_f1": benchmark["baseline_metrics"]["last_failure"]["macro_f1"],
+                "balanced_accuracy": benchmark["baseline_metrics"]["last_failure"]["balanced_accuracy"],
+                "top_k_accuracy": None,
+            },
+            {
+                "variant": "v1_attribution",
+                "accuracy": benchmark["baseline_metrics"]["v1"]["accuracy"],
+                "macro_f1": benchmark["baseline_metrics"]["v1"]["macro_f1"],
+                "balanced_accuracy": benchmark["baseline_metrics"]["v1"]["balanced_accuracy"],
+                "top_k_accuracy": benchmark.get("top_k_accuracy"),
+            },
+            {
+                "variant": "v2_no_causal_origin",
+                "accuracy": benchmark_no_origin["metrics"]["accuracy"],
+                "macro_f1": benchmark_no_origin["metrics"]["macro_f1"],
+                "balanced_accuracy": benchmark_no_origin["metrics"]["balanced_accuracy"],
+                "top_k_accuracy": benchmark_no_origin.get("top_k_accuracy"),
+            },
+            {
+                "variant": "v2_full",
+                "accuracy": benchmark["metrics"]["accuracy"],
+                "macro_f1": benchmark["metrics"]["macro_f1"],
+                "balanced_accuracy": benchmark["metrics"]["balanced_accuracy"],
+                "top_k_accuracy": benchmark.get("top_k_accuracy"),
+            },
+        ]
+        report_bundle["who_when"] = [
+            "- Not executed in this benchmark run.",
+            "- The Who&When adapter evaluates both agent and step attribution when run directly via `python -m agenteval.adapters.who_when_adapter`.",
+            "- Adapter assumptions: history is converted to single-parent session chains and step IDs are derived from history order.",
+        ]
+        report_bundle["calibration"] = [
+            "- Dedicated calibration workflow available at `python -m scripts.calibrate`.",
+            "- This benchmark run does not fit a new calibrator; it only reports whether calibrated confidence values were available in the evaluated records.",
+        ]
+        report_bundle["limitations"] = [
+            "- This report is based on the stored benchmark traces in the repository, not a broad external evaluation set.",
+            "- Confidence calibration metrics may apply only to the calibrated subset, so coverage should be checked alongside ECE and Brier score.",
+            "- Ablation results are directional; no statistical significance is claimed here.",
+        ]
+
+        report_md = render_benchmark_markdown(report_bundle, title="AgentEval Benchmark Report")
         output_path = args.output
         output_dir = os.path.dirname(output_path)
         if output_dir:

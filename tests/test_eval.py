@@ -7,6 +7,8 @@ from agenteval.eval.calibration import (
     select_threshold,
     calibrate_threshold,
     balanced_accuracy,
+    roc_auc_score,
+    pr_auc_score,
     ConfidenceCalibration,
     expected_calibration_error,
     brier_score,
@@ -171,6 +173,31 @@ def test_calibration_result_metadata():
     assert result.split == "calibration"
     assert result.calibration_version == "v1"
     assert result.threshold is not None
+
+
+def test_threshold_calibration_uses_failure_score_for_auc():
+    """Checks that lower health maps to higher failure score for AUC calculations."""
+    result = calibrate_threshold(
+        metric="overall_health",
+        values=[0.1, 0.2, 0.8, 0.9],
+        labels=[1, 1, 0, 0],
+        dataset="unit-test",
+        split="calibration",
+        calibration_version="v1",
+    )
+    assert result.roc_auc == pytest.approx(1.0)
+    assert result.pr_auc == pytest.approx(1.0)
+
+
+def test_failure_score_auc_direction():
+    """Checks that reversed ranking does not report a high AUC."""
+    failure_scores_good = [0.9, 0.8, 0.2, 0.1]
+    failure_scores_bad = [0.1, 0.2, 0.8, 0.9]
+    labels = [1, 1, 0, 0]
+    assert roc_auc_score(labels, failure_scores_good) == pytest.approx(1.0)
+    assert pr_auc_score(labels, failure_scores_good) == pytest.approx(1.0)
+    assert roc_auc_score(labels, failure_scores_bad) == pytest.approx(0.0)
+    assert pr_auc_score(labels, failure_scores_bad) < 0.8
 
 def test_confidence_calibration_metrics_and_identity_fallback():
     """Checks calibrated confidence helpers return calibrated probabilities and calibration metrics."""

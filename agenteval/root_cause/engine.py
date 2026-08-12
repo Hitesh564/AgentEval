@@ -20,6 +20,7 @@ class RootCauseEngine:
         confidence_calibration_path: Optional[str] = None,
         threshold_calibration_path: Optional[str] = None,
         threshold_calibration: Optional[ThresholdCalibrationArtifact] = None,
+        causal_origin_weighting: bool = True,
     ):
         self.db_path = db_path
         self.latency_budget = latency_budget
@@ -41,6 +42,7 @@ class RootCauseEngine:
                 or os.environ.get("AGENTEVAL_THRESHOLD_CALIBRATION_PATH")
             )
         )
+        self.causal_origin_weighting = causal_origin_weighting
 
     def _load_confidence_calibrator(self, path: Optional[str]) -> Optional[ConfidenceCalibration]:
         if not path or not os.path.exists(path):
@@ -470,7 +472,12 @@ class RootCauseEngine:
                     candidates.append(n_data)
         
         # Sort candidates by causal origin score rather than pure local severity alone.
-        candidates.sort(key=lambda x: x.get("causal_origin_score", x.get("attribution_score", 0.0)), reverse=True)
+        def _ranking_score(node_data: Dict[str, Any]) -> float:
+            if self.causal_origin_weighting:
+                return node_data.get("causal_origin_score", node_data.get("attribution_score", 0.0))
+            return node_data.get("attribution_score", 0.0)
+
+        candidates.sort(key=_ranking_score, reverse=True)
         
         root_cause_node = None
         is_ambiguous = False
@@ -481,7 +488,7 @@ class RootCauseEngine:
         confidence_tier = "high"
 
         candidate_scores = [
-            c.get("causal_origin_score", c.get("attribution_score", c["raw_health"]))
+            _ranking_score(c)
             for c in candidates
         ]
         if len(candidates) == 1:
@@ -520,8 +527,8 @@ class RootCauseEngine:
                 # Worst candidate is root cause
                 root_cause_node = c1
                 root_cause_node["is_root_cause"] = True
-                h_root = c1.get("causal_origin_score", c1.get("attribution_score", c1["raw_health"]))
-                h_second = c2.get("causal_origin_score", c2.get("attribution_score", c2["raw_health"]))
+                h_root = _ranking_score(c1)
+                h_second = _ranking_score(c2)
                 candidate_separation = max(0.0, min(1.0, h_root - h_second))
 
         if self.confidence_calibrator is not None:
