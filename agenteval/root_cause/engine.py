@@ -1,10 +1,9 @@
 import os
-import os
 from typing import Dict, Any, List, Optional
 from agenteval.taxonomy import FailureType
 from agenteval.eval.metrics import EvaluationEngine
 from agenteval.eval.health import get_health_config, weighted_health
-from agenteval.eval.calibration import ConfidenceCalibration
+from agenteval.eval.calibration import ConfidenceCalibration, ThresholdCalibrationArtifact
 from agenteval.sdk.storage import TraceStore
 
 class RootCauseEngine:
@@ -18,6 +17,9 @@ class RootCauseEngine:
         latency_budget: float = 2.0,
         mode: Optional[str] = None,
         confidence_calibrator: Optional[ConfidenceCalibration] = None,
+        confidence_calibration_path: Optional[str] = None,
+        threshold_calibration_path: Optional[str] = None,
+        threshold_calibration: Optional[ThresholdCalibrationArtifact] = None,
     ):
         self.db_path = db_path
         self.latency_budget = latency_budget
@@ -25,7 +27,47 @@ class RootCauseEngine:
             mode = os.environ.get("AGENTEVAL_MODE", "replay")
         self.eval_engine = EvaluationEngine(db_path=db_path, mode=mode)
         self.store = TraceStore(db_path=db_path)
-        self.confidence_calibrator = confidence_calibrator or ConfidenceCalibration.identity()
+        self.confidence_calibrator = (
+            confidence_calibrator
+            or self._load_confidence_calibrator(
+                confidence_calibration_path
+                or os.environ.get("AGENTEVAL_CONFIDENCE_CALIBRATION_PATH")
+            )
+        )
+        self.threshold_calibration = (
+            threshold_calibration
+            or self._load_threshold_calibration(
+                threshold_calibration_path
+                or os.environ.get("AGENTEVAL_THRESHOLD_CALIBRATION_PATH")
+            )
+        )
+
+    def _load_confidence_calibrator(self, path: Optional[str]) -> Optional[ConfidenceCalibration]:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            return ConfidenceCalibration.load_json(path)
+        except Exception:
+            return None
+
+    def _load_threshold_calibration(self, path: Optional[str]) -> Optional[ThresholdCalibrationArtifact]:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            return ThresholdCalibrationArtifact.load_json(path)
+        except Exception:
+            return None
+
+    def _calibrated_failure_threshold(self, node_type: str, config) -> float:
+        if self.threshold_calibration is not None:
+            metric = str(self.threshold_calibration.metric).lower()
+            if metric in {node_type.lower(), "overall", "overall_health", "all"}:
+                return float(self.threshold_calibration.threshold)
+        return config.threshold_policy.get("overall", 0.70)
+
+    def get_failure_threshold(self, node_type: str) -> float:
+        """Returns the active failure threshold for a node type."""
+        return self._calibrated_failure_threshold(node_type, get_health_config(node_type))
 
     def collect_evidence(self, node: Dict[str, Any], session_traces: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -232,7 +274,7 @@ class RootCauseEngine:
         raw_health = health["overall_health"] if health["overall_health"] is not None else 0.0
         worst_dim = health["weakest_dimension"]
         failure_type = None
-        threshold = config.threshold_policy.get("overall", 0.70)
+        threshold = self._calibrated_failure_threshold(node_type, config)
         if health["overall_health"] is not None and health["overall_health"] < threshold:
             if worst_dim in ("retrieval", "retrieval_relevance", "retrieval_recall", "retrieval_coverage"):
                 failure_type = FailureType.RETRIEVAL_FAILURE
@@ -311,7 +353,8 @@ class RootCauseEngine:
             
             # If the final attempt is healthy, clear failure_type; retries remain explicit evidence.
             failure_type = health_details["failure_type"]
-            if consolidated_health >= 0.70:
+            failure_threshold = self._calibrated_failure_threshold(final_attempt["node_type"], get_health_config(final_attempt["node_type"]))
+            if consolidated_health >= failure_threshold:
                 failure_type = None
             
             node_maps[node_id] = {
@@ -370,6 +413,7 @@ class RootCauseEngine:
             downstream_scores = [max(0.0, 1.0 - node_maps[c]["raw_health"]) for c in child_ids if c in node_maps]
             downstream_consistency_score = sum(downstream_scores) / len(downstream_scores) if downstream_scores else 0.0
             temporal_score = 1.0 - (idx / (total_nodes - 1)) if total_nodes > 1 else 1.0
+            origin_prior = max(0.0, min(1.0, 1.0 - upstream_dependency_score))
 
             components = {
                 "local_failure_score": local_failure_score,
@@ -385,10 +429,18 @@ class RootCauseEngine:
             }
             weight_sum = sum(weights.values())
             attribution_score = sum(components[k] * weights[k] for k in components) / weight_sum if weight_sum else local_failure_score
+            causal_origin_score = (
+                0.45 * local_failure_score
+                + 0.20 * origin_prior
+                + 0.15 * downstream_consistency_score
+                + 0.20 * temporal_score
+            )
+            causal_origin_score = max(0.0, min(1.0, causal_origin_score))
 
             n_data["children_node_ids"] = child_ids
             n_data["attribution_evidence"] = components
             n_data["attribution_score"] = attribution_score
+            n_data["causal_origin_score"] = causal_origin_score
 
         # Step 3: Identify failure candidates that do not inherit failure from upstream
         candidates = []
@@ -397,9 +449,10 @@ class RootCauseEngine:
             
             # Check if this node's failure was corrected by a downstream revision node (e.g., generator_revision)
             revision_id = f"{node_id}_revision"
+            node_threshold = self._calibrated_failure_threshold(n_data["node_type"], get_health_config(n_data["node_type"]))
             is_resolved_by_revision = (
                 revision_id in node_maps 
-                and node_maps[revision_id]["raw_health"] >= 0.70
+                and node_maps[revision_id]["raw_health"] >= node_threshold
             )
             
             if n_data.get("failed_dimensions") and not is_resolved_by_revision:
@@ -411,37 +464,33 @@ class RootCauseEngine:
                         for p in parents
                         if p in node_maps and node_maps[p].get("failure_type") is not None and p != node_id
                     }
-                    current_failure_type = failure_type.value if failure_type is not None else None
+                    current_failure_type = n_data.get("failure_type").value if n_data.get("failure_type") is not None else None
                     has_failed_parent = current_failure_type in parent_failure_types if current_failure_type else False
                 if not has_failed_parent:
                     candidates.append(n_data)
         
-        # Sort candidates by attribution score rather than raw health alone
-        candidates.sort(key=lambda x: x.get("attribution_score", 0.0), reverse=True)
+        # Sort candidates by causal origin score rather than pure local severity alone.
+        candidates.sort(key=lambda x: x.get("causal_origin_score", x.get("attribution_score", 0.0)), reverse=True)
         
         root_cause_node = None
         is_ambiguous = False
         candidate_separation = 0.0
         calibrated_probability = None
-        confidence = 1.0
+        confidence_calibrated = False
+        confidence = None
         confidence_tier = "high"
-        
+
+        candidate_scores = [
+            c.get("causal_origin_score", c.get("attribution_score", c["raw_health"]))
+            for c in candidates
+        ]
         if len(candidates) == 1:
             root_cause_node = candidates[0]
             root_cause_node["is_root_cause"] = True
-            
-            # Compute candidate separation against the second-best attribution score
-            h_root = root_cause_node.get("attribution_score", root_cause_node["raw_health"])
-            other_healths = [
-                n.get("attribution_score", n["raw_health"]) for n in node_maps.values() 
-                if n["node_id"] != root_cause_node["node_id"]
-            ]
-            h_second = max(other_healths) if other_healths else 0.0
+
+            h_root = candidate_scores[0]
+            h_second = 0.0
             candidate_separation = max(0.0, min(1.0, h_root - h_second))
-            calibrated = self.confidence_calibrator.calibrate(candidate_separation)
-            calibrated_probability = calibrated.get("calibrated_probability")
-            confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
-            
         elif len(candidates) >= 2:
             c1 = candidates[0]
             c2 = candidates[1]
@@ -466,20 +515,22 @@ class RootCauseEngine:
                 c1["is_co_originator"] = True
                 c2["is_co_originator"] = True
                 candidate_separation = 0.0
-                calibrated = self.confidence_calibrator.calibrate(candidate_separation)
-                calibrated_probability = calibrated.get("calibrated_probability")
-                confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
                 confidence_tier = "ambiguous"
             else:
                 # Worst candidate is root cause
                 root_cause_node = c1
                 root_cause_node["is_root_cause"] = True
-                h_root = root_cause_node.get("attribution_score", root_cause_node["raw_health"])
-                h_second = c2.get("attribution_score", c2["raw_health"])
+                h_root = c1.get("causal_origin_score", c1.get("attribution_score", c1["raw_health"]))
+                h_second = c2.get("causal_origin_score", c2.get("attribution_score", c2["raw_health"]))
                 candidate_separation = max(0.0, min(1.0, h_root - h_second))
-                calibrated = self.confidence_calibrator.calibrate(candidate_separation)
-                calibrated_probability = calibrated.get("calibrated_probability")
-                confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
+
+        if self.confidence_calibrator is not None:
+            calibrated = self.confidence_calibrator.calibrate(candidate_separation)
+            calibrated_probability = calibrated.get("calibrated_probability")
+            confidence_calibrated = bool(calibrated.get("confidence_calibrated"))
+            confidence = calibrated_probability if calibrated_probability is not None else candidate_separation
+        else:
+            confidence = candidate_separation
                 
         # Set confidence tier for non-ambiguous cases
         if not is_ambiguous and root_cause_node:
@@ -494,13 +545,25 @@ class RootCauseEngine:
         # Propagate confidence & confidence_tier to all nodes in node_maps
         for n_data in node_maps.values():
             n_data["confidence"] = confidence
+            n_data["confidence_calibrated"] = confidence_calibrated
             n_data["confidence_tier"] = confidence_tier
             n_data["candidate_separation"] = candidate_separation
             n_data["raw_score"] = candidate_separation
             n_data["calibrated_probability"] = calibrated_probability
-            n_data["calibration_method"] = self.confidence_calibrator.method
-            n_data["calibration_status"] = self.confidence_calibrator.status
-            n_data["calibration_version"] = self.confidence_calibrator.version
+            n_data["calibration_method"] = self.confidence_calibrator.method if self.confidence_calibrator is not None else "identity"
+            n_data["calibration_status"] = self.confidence_calibrator.status if self.confidence_calibrator is not None else "unavailable"
+            n_data["calibration_version"] = self.confidence_calibrator.version if self.confidence_calibrator is not None else "unavailable"
+            n_data["ranked_candidates"] = [
+                {
+                    "node_id": c["node_id"],
+                    "node_type": c["node_type"],
+                    "attribution_score": c.get("attribution_score", c["raw_health"]),
+                    "causal_origin_score": c.get("causal_origin_score", c.get("attribution_score", c["raw_health"])),
+                    "raw_health": c["raw_health"],
+                    "failure_type": c["failure_type"].value if c.get("failure_type") else None,
+                }
+                for c in candidates
+            ]
 
         # Step 3.5: Set is_inherited_degradation boolean and inherited_from_node_ids
         for n_data in node_maps.values():

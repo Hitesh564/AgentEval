@@ -1,5 +1,12 @@
 import os
 from datetime import datetime, timezone
+
+import pytest
+
+pytest.importorskip("datasets")
+if os.environ.get("AGENTEVAL_RUN_SCRATCH_TESTS") != "1":
+    pytest.skip("scratch integration test disabled by default", allow_module_level=True)
+
 from datasets import load_dataset
 
 from agenteval.sdk.storage import TraceStore

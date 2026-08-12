@@ -177,8 +177,9 @@ def test_confidence_calibration_metrics_and_identity_fallback():
     calibrator = ConfidenceCalibration.identity()
     fallback = calibrator.calibrate(0.42)
     assert fallback["raw_score"] == pytest.approx(0.42)
-    assert fallback["calibrated_probability"] == pytest.approx(0.42)
-    assert fallback["status"] == "fallback"
+    assert fallback["calibrated_probability"] is None
+    assert fallback["confidence_calibrated"] is False
+    assert fallback["status"] == "unavailable"
 
     report = expected_calibration_error([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95], n_bins=2)
     assert report["ece"] >= 0.0
@@ -186,6 +187,32 @@ def test_confidence_calibration_metrics_and_identity_fallback():
     assert brier_score([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95]) < 0.03
     diag = reliability_diagram([0, 0, 1, 1], [0.05, 0.15, 0.85, 0.95], n_bins=2)
     assert len(diag) == 2
+
+def test_calibration_artifact_round_trip(tmp_path):
+    """Checks calibration artifacts can be saved and loaded without losing metadata."""
+    from agenteval.eval.calibration import ThresholdCalibrationArtifact
+
+    artifact = ThresholdCalibrationArtifact(
+        metric="overall_health",
+        threshold=0.71,
+        precision=0.8,
+        recall=0.75,
+        f1=0.77,
+        roc_auc=0.9,
+        pr_auc=0.88,
+        split="calibration",
+        dataset="unit-test",
+        dataset_version="v1",
+        calibration_version="2026-08",
+        timestamp="2026-08-11T00:00:00Z",
+        configuration={"node_type": "generator"},
+    )
+    path = tmp_path / "threshold.json"
+    artifact.save_json(str(path))
+    loaded = ThresholdCalibrationArtifact.load_json(str(path))
+    assert loaded.threshold == pytest.approx(0.71)
+    assert loaded.dataset == "unit-test"
+    assert loaded.configuration["node_type"] == "generator"
 
 def test_temperature_and_isotonic_calibration_fit():
     """Checks both calibration strategies produce monotone, versioned artifacts."""
@@ -210,6 +237,21 @@ def test_temperature_and_isotonic_calibration_fit():
     summary = isotonic.summary([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1])
     assert "ece" in summary
     assert "brier_score" in summary
+
+
+def test_confidence_calibration_round_trip(tmp_path):
+    """Checks fitted confidence calibrators can be saved and loaded."""
+    calibrator = ConfidenceCalibration.fit_temperature_scaling(
+        [0.1, 0.2, 0.8, 0.9],
+        [0, 0, 1, 1],
+        version="v-save",
+    )
+    path = tmp_path / "calibrator.json"
+    calibrator.save_json(str(path))
+    loaded = ConfidenceCalibration.load_json(str(path))
+    assert loaded.method == calibrator.method
+    assert loaded.status == calibrator.status
+    assert loaded.predict(0.2) == pytest.approx(calibrator.predict(0.2))
 
 def test_instruction_following_metric():
     """Validates instruction following metric structure."""

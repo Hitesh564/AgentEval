@@ -15,6 +15,7 @@ class BenchmarkRecord:
     true_step: Optional[str] = None
     pred_step: Optional[str] = None
     confidence: Optional[float] = None
+    confidence_calibrated: bool = False
     top_k_agents: Optional[List[str]] = None
     baseline_last_failure: Optional[str] = None
     baseline_v1: Optional[str] = None
@@ -145,7 +146,7 @@ def baseline_suite(records: Sequence[BenchmarkRecord], *, seed: int = 0) -> Dict
 
 def confidence_metrics(y_true: Sequence[str], y_pred: Sequence[str], confidence: Sequence[Optional[float]]) -> Dict[str, Any]:
     correctness = [1 if t == p else 0 for t, p in zip(y_true, y_pred)]
-    usable_confidence = [float(c) if c is not None else 0.0 for c in confidence]
+    usable_confidence = [float(c) for c in confidence]
     report = expected_calibration_error(correctness, usable_confidence)
     return {
         "ece": report["ece"],
@@ -163,6 +164,7 @@ def benchmark_summary(
     y_pred = [record.pred_agent for record in records]
     top_k = [record.top_k_agents or [] for record in records]
     confidence = [record.confidence for record in records]
+    calibrated_confidence = [record.confidence for record in records if record.confidence is not None and record.confidence_calibrated]
     metrics = classification_metrics(y_true, y_pred)
     step_records = [
         record for record in records
@@ -194,7 +196,7 @@ def benchmark_summary(
         for name, preds in baselines.items()
     }
     top_k_acc = top_k_accuracy(y_true, top_k) if any(top_k) else None
-    confidence_report = confidence_metrics(y_true, y_pred, confidence) if any(c is not None for c in confidence) else {
+    confidence_report = confidence_metrics(y_true, y_pred, calibrated_confidence) if calibrated_confidence and len(calibrated_confidence) == len(records) else {
         "ece": None,
         "brier_score": None,
         "reliability_diagram": [],

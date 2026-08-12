@@ -146,6 +146,8 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
     root_cause_summary = None
     if root_cause:
         root_cause_summary = {
+            "responsible_agent": root_cause["node_type"],
+            "responsible_step": root_cause["node_id"],
             "node_id": root_cause["node_id"],
             "node_type": root_cause["node_type"],
             "failure_type": root_cause["failure_type"].value if root_cause.get("failure_type") else None,
@@ -154,14 +156,17 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
             "weakest_dimension": root_cause.get("weakest_dimension"),
             "weakest_dimension_score": round(root_cause.get("weakest_dimension_score", 0.0), 2) if root_cause.get("weakest_dimension_score") is not None else None,
             "attribution_score": round(root_cause.get("attribution_score", 0.0), 2),
+            "causal_origin_score": round(root_cause.get("causal_origin_score", root_cause.get("attribution_score", 0.0)), 2),
             "candidate_separation": round(root_cause.get("candidate_separation", 0.0), 2),
-            "calibrated_probability": round(root_cause.get("calibrated_probability", root_cause["confidence"]), 2) if root_cause.get("calibrated_probability") is not None else None,
+            "calibrated_probability": round(root_cause.get("calibrated_probability"), 2) if root_cause.get("calibrated_probability") is not None else None,
             "raw_score": round(root_cause.get("raw_score", root_cause.get("candidate_separation", 0.0)), 2),
             "calibration_method": root_cause.get("calibration_method"),
             "calibration_status": root_cause.get("calibration_status"),
             "calibration_version": root_cause.get("calibration_version"),
-            "confidence": round(root_cause["confidence"], 2),
+            "confidence": round(root_cause["confidence"], 2) if root_cause.get("confidence") is not None else None,
+            "confidence_calibrated": root_cause.get("confidence_calibrated", False),
             "confidence_tier": root_cause["confidence_tier"],
+            "ranked_candidates": root_cause.get("ranked_candidates", []),
         }
         
     co_originators = [
@@ -201,6 +206,7 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
             "parent_node_ids": node["parent_node_ids"],
             "failure_type": node["failure_type"].value if node.get("failure_type") else None,
             "attribution_score": round(node.get("attribution_score", 0.0), 2),
+            "causal_origin_score": round(node.get("causal_origin_score", node.get("attribution_score", 0.0)), 2),
             "attribution_evidence": node.get("attribution_evidence", {}),
             "candidate_separation": round(node.get("candidate_separation", 0.0), 2),
             "calibrated_probability": round(node.get("calibrated_probability", 0.0), 2) if node.get("calibrated_probability") is not None else None,
@@ -209,7 +215,8 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
             "calibration_status": node.get("calibration_status"),
             "calibration_version": node.get("calibration_version"),
             "evidence": node["evidence"],
-            "confidence": round(node["confidence"], 2) if "confidence" in node else 1.0,
+            "confidence": round(node["confidence"], 2) if node.get("confidence") is not None else None,
+            "confidence_calibrated": node.get("confidence_calibrated", False),
             "confidence_tier": node.get("confidence_tier", "high"),
             "recommendations": node_recs
         })

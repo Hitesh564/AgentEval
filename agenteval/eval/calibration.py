@@ -1,4 +1,6 @@
+import json
 from dataclasses import dataclass, asdict, field
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Any
 from datetime import datetime, timezone
 import math
@@ -20,6 +22,51 @@ class CalibrationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ThresholdCalibrationArtifact:
+    metric: str
+    threshold: float
+    precision: float
+    recall: float
+    f1: float
+    roc_auc: Optional[float]
+    pr_auc: Optional[float]
+    split: str
+    dataset: str
+    dataset_version: str
+    calibration_version: str
+    timestamp: str
+    configuration: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def save_json(self, path: str) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
+
+    @classmethod
+    def load_json(cls, path: str) -> "ThresholdCalibrationArtifact":
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls(
+            metric=data["metric"],
+            threshold=float(data["threshold"]),
+            precision=float(data["precision"]),
+            recall=float(data["recall"]),
+            f1=float(data["f1"]),
+            roc_auc=data.get("roc_auc"),
+            pr_auc=data.get("pr_auc"),
+            split=data["split"],
+            dataset=data["dataset"],
+            dataset_version=data.get("dataset_version", "unknown"),
+            calibration_version=data.get("calibration_version", "unknown"),
+            timestamp=data.get("timestamp", data.get("date", "")),
+            configuration=data.get("configuration", {}),
+        )
 
 
 def _clip_prob(value: float) -> float:
@@ -227,10 +274,12 @@ class ConfidenceCalibration:
         return score
 
     def calibrate(self, raw_score: float) -> Dict[str, Any]:
-        probability = self.predict(raw_score)
+        is_calibrated = self.status == "complete" and self.method != "identity"
+        probability = self.predict(raw_score) if is_calibrated else None
         return {
             "raw_score": raw_score,
             "calibrated_probability": probability,
+            "confidence_calibrated": is_calibrated,
             "status": self.status,
             "method": self.method,
             "version": self.version,
@@ -239,7 +288,28 @@ class ConfidenceCalibration:
 
     @classmethod
     def identity(cls, version: str = "unavailable") -> "ConfidenceCalibration":
-        return cls(method="identity", version=version, status="fallback")
+        return cls(method="identity", version=version, status="unavailable")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def save_json(self, path: str) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2, sort_keys=True)
+
+    @classmethod
+    def load_json(cls, path: str) -> "ConfidenceCalibration":
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls(
+            method=data["method"],
+            version=data.get("version", "unknown"),
+            status=data.get("status", "unavailable"),
+            temperature=data.get("temperature"),
+            isotonic_breakpoints=[tuple(point) for point in data.get("isotonic_breakpoints") or []] or None,
+            fit_metrics=data.get("fit_metrics", {}),
+        )
 
     @classmethod
     def fit_temperature_scaling(

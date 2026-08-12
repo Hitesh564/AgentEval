@@ -7,8 +7,6 @@
 - Macro F1: 0.510
 - Balanced Accuracy: 0.563
 - Top-k Accuracy: 0.689
-- ECE: 0.600
-- Brier Score: 0.582
 
 ## Baselines
 - random: accuracy=0.200, macro_f1=0.158, balanced_accuracy=0.177

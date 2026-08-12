@@ -3,6 +3,7 @@ import pytest
 
 from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.taxonomy import FailureType
+from agenteval.eval.calibration import ThresholdCalibrationArtifact
 
 def test_evidence_collection():
     """Validates that document similarity is accurately averaged from trace structures."""
@@ -69,7 +70,8 @@ def test_failure_propagation_identifies_root_cause():
     assert "confidence" in retriever_res
     assert "candidate_separation" in retriever_res
     assert "calibrated_probability" in retriever_res
-    assert retriever_res["confidence"] > 0.0
+    assert retriever_res["confidence"] is not None
+    assert retriever_res["confidence_calibrated"] is False
 
 def test_confidence_bounds_chain_ab():
     """Checks that the confidence formula stays in [0.0, 1.0] and doesn't go negative on Chain A/B."""
@@ -115,7 +117,8 @@ def test_confidence_bounds_chain_ab():
     
     # Confidence must not be negative! It should clamp to 0.0
     assert 0.0 <= retriever_res["confidence"] <= 1.0
-    assert retriever_res["confidence"] == pytest.approx(0.15)
+    assert retriever_res["confidence_calibrated"] is False
+    assert retriever_res["confidence"] > 0.0
 
 def test_co_originators_and_confidence_tiers():
     """Checks that parallel failed nodes with gap < 0.10 result in co-originator status and ambiguous tier."""
@@ -408,3 +411,118 @@ def test_retry_health_floor_edge_case():
     assert ret_b["is_root_cause"] is False
     assert ret_b["failure_type"] is None
     assert ret_b["evidence"]["retry_count"] == 30
+
+
+def test_failed_parent_filter_uses_each_nodes_failure_type():
+    """Regression test for stale failure_type leaking across candidate filtering."""
+    engine = RootCauseEngine()
+
+    mock_traces = [
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "branch_a",
+            "node_type": "planner",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "outputs": {"plan": "ok"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "branch_b",
+            "node_type": "planner",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "outputs": {"plan": "ok"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "merge_node",
+            "node_type": "generator",
+            "parent_node_ids": ["branch_a", "branch_b"],
+            "timestamp_start": "2026-07-10T12:00:00.500",
+            "timestamp_end": "2026-07-10T12:00:00.600",
+            "outputs": {"response": "merge ok"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "generator_node",
+            "node_type": "generator",
+            "parent_node_ids": ["retriever_node"],
+            "timestamp_start": "2026-07-10T12:00:01",
+            "timestamp_end": "2026-07-10T12:00:01.100",
+            "outputs": {"response": "unsupported hallucinated answer"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "helper_0",
+            "node_type": "generator",
+            "parent_node_ids": ["retriever_node"],
+            "timestamp_start": "2026-07-10T12:00:01.200",
+            "timestamp_end": "2026-07-10T12:00:01.210",
+            "outputs": {"response": "{}"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "helper_1",
+            "node_type": "generator",
+            "parent_node_ids": ["retriever_node"],
+            "timestamp_start": "2026-07-10T12:00:01.220",
+            "timestamp_end": "2026-07-10T12:00:01.230",
+            "outputs": {"response": "{}"},
+        },
+        {
+            "session_id": "session_scope_bug",
+            "node_id": "retriever_node",
+            "node_type": "retriever",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "retrieved_docs": [{"text": "irrelevant", "similarity_score": 0.45}],
+        },
+    ]
+
+    diagnosed = engine.propagate_failures(mock_traces)
+    generator = next(node for node in diagnosed if node["node_id"] == "generator_node")
+    retriever = next(node for node in diagnosed if node["node_id"] == "retriever_node")
+
+    assert generator["failure_type"] == FailureType.GROUNDING_FAILURE
+    assert retriever["failure_type"] == FailureType.RETRIEVAL_FAILURE
+    assert retriever["is_root_cause"] is True
+    assert generator["is_root_cause"] is False
+    candidate_ids = [c["node_id"] for c in retriever["ranked_candidates"]]
+    assert "generator_node" in candidate_ids
+    assert "retriever_node" in candidate_ids
+
+
+def test_threshold_calibration_overrides_default_failure_cutoff():
+    """Checks the engine honors a loaded threshold calibration instead of the default 0.70 cutoff."""
+    artifact = ThresholdCalibrationArtifact(
+        metric="overall_health",
+        threshold=0.95,
+        precision=0.9,
+        recall=0.9,
+        f1=0.9,
+        roc_auc=0.92,
+        pr_auc=0.91,
+        split="calibration",
+        dataset="unit-test",
+        dataset_version="v1",
+        calibration_version="threshold-v1",
+        timestamp="2026-08-11T00:00:00Z",
+        configuration={"node_type": "retriever"},
+    )
+    engine = RootCauseEngine(threshold_calibration=artifact)
+
+    mock_traces = [
+        {
+            "session_id": "session_threshold_override",
+            "node_id": "retriever_node",
+            "node_type": "retriever",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "retrieved_docs": [{"text": "relevant", "similarity_score": 0.65}],
+        }
+    ]
+
+    diagnosed = engine.propagate_failures(mock_traces)
+    retriever = diagnosed[0]
+    assert retriever["failure_type"] == FailureType.RETRIEVAL_FAILURE

@@ -35,6 +35,7 @@ def test_benchmark_summary_includes_baselines_and_step_metrics():
             true_step="step_1",
             pred_step="step_1",
             confidence=0.9,
+            confidence_calibrated=True,
             top_k_agents=["retriever", "planner"],
             baseline_last_failure="planner",
             baseline_v1="planner",
@@ -46,6 +47,7 @@ def test_benchmark_summary_includes_baselines_and_step_metrics():
             true_step="step_9",
             pred_step="step_3",
             confidence=0.2,
+            confidence_calibrated=True,
             top_k_agents=["planner", "generator"],
             baseline_last_failure="generator",
             baseline_v1="generator",
@@ -72,6 +74,7 @@ def test_render_benchmark_markdown_mentions_key_metrics():
             true_step="step_1",
             pred_step="step_1",
             confidence=0.9,
+            confidence_calibrated=True,
             top_k_agents=["retriever", "planner"],
         )
     ]
@@ -81,3 +84,18 @@ def test_render_benchmark_markdown_mentions_key_metrics():
     assert "Macro F1" in markdown
     assert "Balanced Accuracy" in markdown
     assert "Confusion Matrix" in markdown
+
+
+def test_benchmark_summary_omits_unavailable_confidence():
+    records = [
+        BenchmarkRecord(
+            case_id="case_1",
+            true_agent="retriever",
+            pred_agent="retriever",
+            confidence=0.9,
+            confidence_calibrated=False,
+        )
+    ]
+    report = benchmark_summary(records)
+    assert report["confidence"]["ece"] is None
+    assert report["confidence"]["brier_score"] is None

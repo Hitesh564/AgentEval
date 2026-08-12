@@ -5,6 +5,7 @@ import pytest
 from agenteval.sdk.storage import TraceStore
 from agenteval.sdk.tracer import trace
 from agenteval.root_cause.cross_session import CrossSessionEngine
+from agenteval.eval.calibration import ThresholdCalibrationArtifact
 from agenteval.eval import metrics
 
 def test_transitive_chain_walking_depth_cap():
@@ -204,3 +205,48 @@ def test_cumulative_cost_guard_halting(monkeypatch):
     assert res2 is None
     # Verify CUMULATIVE_COST did not increase further
     assert round(metrics.CUMULATIVE_COST, 3) == 0.195
+
+
+def test_cross_session_honors_threshold_calibration():
+    """Checks cross-session diagnosis uses the calibrated threshold instead of the default 0.70."""
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        store = TraceStore(db_path=db_path)
+        with trace(session_id="calibrated_s1", node_id="retriever_node", node_type="retriever", db_path=db_path) as t:
+            t.inputs = {"q": "test"}
+            t.outputs = {"r": "low similarity docs"}
+            t.retrieved_docs = [{"text": "docs", "similarity_score": 0.65}]
+
+        artifact = ThresholdCalibrationArtifact(
+            metric="overall_health",
+            threshold=0.95,
+            precision=0.9,
+            recall=0.9,
+            f1=0.9,
+            roc_auc=0.92,
+            pr_auc=0.91,
+            split="calibration",
+            dataset="unit-test",
+            dataset_version="v1",
+            calibration_version="threshold-v1",
+            timestamp="2026-08-11T00:00:00Z",
+            configuration={"scope": "cross-session"},
+        )
+        threshold_path = os.path.join(tempfile.gettempdir(), "agenteval_threshold_test.json")
+        artifact.save_json(threshold_path)
+        engine = CrossSessionEngine(db_path=db_path, threshold_calibration_path=threshold_path)
+
+        res = engine.diagnose_chain("calibrated_s1")
+        assert res["verdict"] == "failed"
+        assert res["root_cause_session"] == "calibrated_s1"
+        assert res["chain"][0]["status"] == "root-cause"
+    finally:
+        if 'store' in locals() and store:
+            store.close()
+        if 'engine' in locals() and engine:
+            engine.store.close()
+        if 'threshold_path' in locals() and os.path.exists(threshold_path):
+            os.remove(threshold_path)
+        if os.path.exists(db_path):
+            os.remove(db_path)

@@ -1,5 +1,10 @@
 import os
 from sqlalchemy import create_engine, select
+import pytest
+
+if os.environ.get("AGENTEVAL_RUN_SCRATCH_TESTS") != "1":
+    pytest.skip("scratch integration test disabled by default", allow_module_level=True)
+
 from agenteval.sdk.storage import TraceStore
 
 def test_sqlite_engine():
@@ -17,4 +22,3 @@ def test_sqlite_engine():
 
 if __name__ == "__main__":
     test_sqlite_engine()
-

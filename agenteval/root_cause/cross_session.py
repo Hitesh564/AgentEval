@@ -5,10 +5,21 @@ from agenteval.sdk.storage import TraceStore
 from agenteval.root_cause.engine import RootCauseEngine
 
 class CrossSessionEngine:
-    def __init__(self, db_path: str = "agenteval.db", mode: str = "replay"):
+    def __init__(
+        self,
+        db_path: str = "agenteval.db",
+        mode: str = "replay",
+        confidence_calibration_path: Optional[str] = None,
+        threshold_calibration_path: Optional[str] = None,
+    ):
         self.db_path = db_path
         self.store = TraceStore(db_path=db_path)
-        self.rc_engine = RootCauseEngine(db_path=db_path, mode=mode)
+        self.rc_engine = RootCauseEngine(
+            db_path=db_path,
+            mode=mode,
+            confidence_calibration_path=confidence_calibration_path,
+            threshold_calibration_path=threshold_calibration_path,
+        )
 
     def diagnose_chain(self, session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -58,8 +69,9 @@ class CrossSessionEngine:
             # If the session failed internally but its average score was borderline >= 0.70,
             # we clamp its meta-health to 0.69 to ensure it falls below the failure threshold in the meta-graph.
             meta_health = avg_score
-            if not passed and avg_score >= 0.70:
-                meta_health = 0.69
+            session_threshold = self.rc_engine.get_failure_threshold("overall")
+            if not passed and avg_score >= session_threshold:
+                meta_health = max(0.0, session_threshold - 0.01)
                 
             session_results.append({
                 "session_id": s,
@@ -85,7 +97,7 @@ class CrossSessionEngine:
         # Find the first failed session in the chain
         first_failed_idx = -1
         for idx, res in enumerate(session_results):
-            if res["meta_health"] < 0.70:
+            if res["meta_health"] < self.rc_engine.get_failure_threshold("overall"):
                 first_failed_idx = idx
                 break
                 
@@ -115,7 +127,7 @@ class CrossSessionEngine:
         co_contributors = []
         for idx in range(first_failed_idx + 1, len(session_results)):
             res = session_results[idx]
-            if res["meta_health"] < 0.70:
+            if res["meta_health"] < self.rc_engine.get_failure_threshold("overall"):
                 if res["has_independent_failure"] and not res.get("failure_types", set()).issubset(primary_failed_types):
                     co_contributors.append(res["session_id"])
                     
@@ -131,7 +143,7 @@ class CrossSessionEngine:
         chain_output = []
         for idx, r in enumerate(session_results):
             s_id = r["session_id"]
-            if r["meta_health"] >= 0.70:
+            if r["meta_health"] >= self.rc_engine.get_failure_threshold("overall"):
                 status = "healthy"
             elif s_id == root_cause_session or s_id in co_contributing_sessions:
                 status = "root-cause" if s_id == root_cause_session else "co-contributor"
