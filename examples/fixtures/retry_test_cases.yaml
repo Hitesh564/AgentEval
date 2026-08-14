@@ -1,0 +1,87 @@
+# AgentEval Retry/Reflection Calibration & Verification Dataset
+# 9 Hand-labeled cases covering loop, retry, and revision scenarios
+
+- id: "retry_case_001"
+  query: "Can you search standard refund rules for me?"
+  category: "retrieval_retry_success"
+  expected_root_cause: "none"
+  expected_health_treatment: "penalized_but_passed"
+  attempts_expected: 2
+  is_clean: false
+  notes: "Retriever fails on attempt 1 but succeeds on attempt 2. Final response is correct."
+
+- id: "retry_case_002"
+  query: "Audit refund criteria and guidelines?"
+  category: "retrieval_retry_success"
+  expected_root_cause: "none"
+  expected_health_treatment: "penalized_but_passed"
+  attempts_expected: 2
+  is_clean: false
+  notes: "Retriever succeeds after 1 retry. Correct final outcome but penalized raw health."
+
+- id: "retry_case_003"
+  query: "Lookup returns eligibility details?"
+  category: "retrieval_retry_failure"
+  expected_root_cause: "retriever"
+  expected_health_treatment: "failed"
+  attempts_expected: 3
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Retriever exhausts all 3 attempts with low similarity. Root cause is retriever."
+
+- id: "retry_case_004"
+  query: "Check refund policy standard timeframe?"
+  category: "retrieval_retry_failure"
+  expected_root_cause: "retriever"
+  expected_health_treatment: "failed"
+  attempts_expected: 3
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Retriever exhausts all retries and fails."
+
+- id: "retry_case_005"
+  query: "Are items covered under any warranty?"
+  category: "generator_revision_worse"
+  expected_root_cause: "generator_revision"
+  expected_health_treatment: "failed"
+  attempts_expected: 1  # 1 revision attempt (total 2 generator attempts: generator + generator_revision)
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Generator starts good, revision step introduces a hallucination. Root cause is generator_revision."
+
+- id: "retry_case_006"
+  query: "Tell me about product defect warranty options?"
+  category: "generator_revision_worse"
+  expected_root_cause: "generator_revision"
+  expected_health_treatment: "failed"
+  attempts_expected: 1
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Revision step makes the response worse."
+
+- id: "retry_case_007"
+  query: "How long is standard product warranty duration?"
+  category: "generator_revision_better"
+  expected_root_cause: "none"
+  expected_health_treatment: "penalized_but_passed"
+  attempts_expected: 2
+  is_clean: false
+  notes: "Generator starts bad, revision corrects it. Succeeded on revision, so penalized but passed."
+
+- id: "retry_case_008"
+  query: "Standard refund procedure questions?"
+  category: "none"
+  expected_root_cause: "none"
+  expected_health_treatment: "clean"
+  attempts_expected: 1
+  is_clean: true
+  notes: "Normal clean execution path with no retries."
+
+- id: "retry_case_009"
+  query: "Help with standard return eligibility?"
+  category: "none"
+  expected_root_cause: "none"
+  expected_health_treatment: "clean"
+  attempts_expected: 1
+  is_clean: true
+  notes: "Clean control case."

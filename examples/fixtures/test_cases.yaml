@@ -1,0 +1,325 @@
+# AgentEval Calibration & Verification Dataset
+# 43 Hand-labeled cases: 28 single-node failures, 3 compounding failures, 12 clean controls
+
+- id: "case_001"
+  query: "What is the refund timeline for international buyers?"
+  category: "retrieval_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Low similarity score; retriever returns generic FAQ instead of refund details."
+
+- id: "case_002"
+  query: "How do I request a refund timeline extension?"
+  category: "retrieval_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Retriever fails to find refund timeline extension policy."
+
+- id: "case_003"
+  query: "Who do I contact about the refund timeline?"
+  category: "retrieval_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Retriever returns FAQ with low similarity score."
+
+- id: "case_004"
+  query: "Are there refund timeline exceptions?"
+  category: "retrieval_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Retriever returns off-topic documents."
+
+
+- id: "case_005"
+  query: "What is the status of order 5543?"
+  category: "tool_selection_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Planner calls check_order_history instead of check_order_status due to description similarity."
+
+- id: "case_006"
+  query: "Check status tracking for order 9928?"
+  category: "tool_selection_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Ambiguous wording causes tool selection failure."
+
+- id: "case_007"
+  query: "Where is status information on order 1283?"
+  category: "tool_selection_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Planner incorrectly invokes order history status check."
+
+- id: "case_008"
+  query: "Can you pull up status data for order 8832?"
+  category: "tool_selection_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Tool selector picks wrong history tool."
+
+- id: "case_009"
+  query: "I want to cancel my order 9876 and check eligibility for refund."
+  category: "planning_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Planner ignores the refund eligibility check, outputting plan only for cancellation."
+
+- id: "case_010"
+  query: "Please cancel my order 1122 and inspect if I qualify for return."
+  category: "planning_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Planner prompt limits plan to step 1 (cancel) only."
+
+- id: "case_011"
+  query: "Cancel my order 5533 and check refund eligibility."
+  category: "planning_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Plan is incomplete, neglecting refund eligibility query portion."
+
+- id: "case_012"
+  query: "Can you close my order 4432 and audit return eligibility?"
+  category: "planning_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Plan fails to capture the second action step."
+
+- id: "case_013"
+  query: "My order shipped 10 days ago. The policy allows returns within 14 days. Is it returnable?"
+  category: "reasoning_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Generator reasoning error: incorrectly claims return is ineligible because 10 is greater than 15."
+
+- id: "case_014"
+  query: "My order shipped 12 days ago. The policy allows returns within 14 days. Is it returnable?"
+  category: "reasoning_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Incorrect date window calculation in the generator."
+
+- id: "case_015"
+  query: "My order shipped 13 days ago. The policy allows returns within 14 days. Is it returnable?"
+  category: "reasoning_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Illogical date reasoning output from the generator."
+
+- id: "case_016"
+  query: "My order shipped 8 days ago. The policy allows returns within 14 days. Is it returnable?"
+  category: "reasoning_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Generator logic makes an arithmetic error."
+
+- id: "case_017"
+  query: "What is the warranty period for AgentEval?"
+  category: "grounding_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Retriever drops the warranty document, and generator hallucinates a lifetime warranty."
+
+- id: "case_018"
+  query: "Does the warranty cover water damage?"
+  category: "grounding_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Generator claims lifetime warranty coverage not supported by context."
+
+- id: "case_019"
+  query: "How do I file a warranty claim?"
+  category: "grounding_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Hallucinates free overnight shipping for claims."
+
+- id: "case_020"
+  query: "Where is the warranty claim center?"
+  category: "grounding_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Hallucinates physical support centers."
+
+- id: "case_021"
+  query: "Please generate the return eligibility JSON format."
+  category: "output_formatting_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Generator outputs unparseable JSON without closing quotes or brackets."
+
+- id: "case_022"
+  query: "Format the return validation check in JSON."
+  category: "output_formatting_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Generator outputs malformed JSON format."
+
+- id: "case_023"
+  query: "Return the JSON structure check."
+  category: "output_formatting_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Output has leading/trailing garbage chars that break JSON parsers."
+
+- id: "case_024"
+  query: "Can I get a return state JSON object?"
+  category: "output_formatting_failure"
+  expected_root_cause: "generator"
+  is_clean: false
+  notes: "Output formatting is invalid JSON."
+
+- id: "case_025"
+  query: "Please lookup my shipping status details."
+  category: "latency_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  notes: "Retriever sleeps for 3.1s, blowing past the 2.0s latency budget."
+
+- id: "case_026"
+  query: "Track shipping status latency."
+  category: "latency_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  notes: "Retriever latency delay triggers."
+
+- id: "case_027"
+  query: "Where is the shipping status carrier log?"
+  category: "latency_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  notes: "Retriever experiences artificial lag."
+
+- id: "case_028"
+  query: "Find the shipping carrier status route."
+  category: "latency_failure"
+  expected_root_cause: "retriever"
+  is_clean: false
+  notes: "Retriever node takes 3.1s to complete."
+
+- id: "case_029"
+  query: "Check refund timeline and details."
+  category: "compounding_retrieval_hallucination"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Chain A: retriever fails (low sim FAQ) -> generator hallucinates based on it -> critic misses it. Root cause is retriever."
+
+- id: "case_030"
+  query: "What is the policy for return timelines?"
+  category: "compounding_retrieval_hallucination"
+  expected_root_cause: "retriever"
+  is_clean: false
+  resolved_in_fixed_mode: true
+  notes: "Chain A compounding error: low similarity leads to hallucination approved by critic."
+
+
+- id: "case_031"
+  query: "Check return eligibility and status."
+  category: "planning_failure"
+  expected_root_cause: "planner"
+  is_clean: false
+  notes: "Chain B compounding error: incomplete planning causes correct tool selection for incorrect plan. Root is planner."
+
+- id: "case_032"
+  query: "Can I get a refund if I bought an item 8 days ago?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query with successful resolution."
+
+- id: "case_033"
+  query: "Is return shipping covered in the refund FAQ?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_034"
+  query: "How many days do I have to request a refund?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_035"
+  query: "Can you summarize the general return rules?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_036"
+  query: "Can I return a defective item within the standard 14 days?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_037"
+  query: "Is refund possible for purchased software?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_038"
+  query: "What is the standard policy on return shipping costs?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_039"
+  query: "Can you explain the refund inspection steps?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_040"
+  query: "What is standard return eligibility?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_041"
+  query: "Does return policy cover international items?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_042"
+  query: "Is customer support active for return processing?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_043"
+  query: "Are return requirements active during holidays?"
+  category: "none"
+  expected_root_cause: "none"
+  is_clean: true
+  notes: "Clean control query."
+
+- id: "case_044"
+  query: "Can I cancel my order and check return warranty support?"
+  category: "ambiguous_failure"
+  expected_root_cause: "ambiguous"
+  is_clean: false
+  notes: "Simulates parallel failure with gap < 0.10 between retriever and generator."
+
+- id: "case_045"
+  query: "Cancel shipping carrier status logs check."
+  category: "ambiguous_failure"
+  expected_root_cause: "ambiguous"
+  is_clean: false
+  notes: "Simulates parallel failure with gap < 0.10 between retriever and generator."

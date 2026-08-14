@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agenteval"
+version = "0.1.0"
+description = "Diagnostic SDK and dashboard for root-cause failures in AI agents"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.1",
+    "litellm>=1.41.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "numpy>=1.26.0",
+    "pyyaml>=6.0.0",
+    "langgraph>=0.1.0",
+    "langchain-core>=0.2.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "alembic>=1.13.0",
+    "locust>=2.29.0",
+]
+
+[project.scripts]
+agenteval = "agenteval.benchmark.cli:main"
+
+[tool.setuptools]
+packages = ["agenteval", "agenteval.sdk", "agenteval.eval", "agenteval.root_cause", "agenteval.recommend", "agenteval.benchmark", "agenteval.server", "agenteval.adapters"]
