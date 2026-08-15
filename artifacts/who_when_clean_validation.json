@@ -1,0 +1,24 @@
+{
+  "metrics": {
+    "run1": {
+      "agent_accuracy": 0.6,
+      "step_accuracy": 0.06666666666666667,
+      "exact_match": 0.06666666666666667,
+      "macro_f1": 0.40196078431372556,
+      "balanced_accuracy": 0.4222222222222222,
+      "top_k_agent_accuracy": 0.6
+    },
+    "run2": {
+      "agent_accuracy": 0.6,
+      "step_accuracy": 0.06666666666666667,
+      "exact_match": 0.06666666666666667,
+      "macro_f1": 0.40196078431372556,
+      "balanced_accuracy": 0.4222222222222222,
+      "top_k_agent_accuracy": 0.6
+    }
+  },
+  "metrics_equal": true,
+  "predictions_equal": true,
+  "case_count": 15,
+  "prediction_differences": []
+}

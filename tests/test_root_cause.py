@@ -24,6 +24,106 @@ def test_evidence_collection():
     assert pytest.approx(evidence["retriever_similarity"]) == 0.40
     assert evidence["latency"] == 1.5
 
+
+def test_node_health_evidence_is_structured():
+    """Checks deterministic node-health evidence is attached without altering attribution."""
+    engine = RootCauseEngine()
+
+    mock_session_traces = [
+        {
+            "session_id": "session_node_health",
+            "node_id": "retriever_node",
+            "node_type": "retriever",
+            "timestamp_start": "2026-07-09T12:00:00",
+            "timestamp_end": "2026-07-09T12:00:00.200",
+            "retrieved_docs": [{"text": "relevant data", "similarity_score": 0.92}],
+        }
+    ]
+
+    diagnosed = engine.propagate_failures(mock_session_traces)
+    retriever = diagnosed[0]
+    node_health = retriever["evidence"]["node_health_evidence"]
+
+    assert node_health["method"] == "deterministic_node_health"
+    assert node_health["status"] == "complete"
+    assert node_health["score"] is not None
+    assert set(node_health["signals"]).issuperset(
+        {"execution_success", "retry_health", "latency_health", "output_validity", "tool_health"}
+    )
+    assert node_health["signals"]["retry_health"] == pytest.approx(1.0)
+    assert 0.0 <= node_health["score"] <= 1.0
+
+
+def test_semantic_gating_is_live_only(monkeypatch):
+    """Checks semantic gating can skip live semantic judging but never activates in replay."""
+    monkeypatch.setenv("AGENTEVAL_SEMANTIC_GATING", "true")
+
+    traces = [
+        {
+            "session_id": "session_gate",
+            "node_id": "retriever",
+            "node_type": "retriever",
+            "timestamp_start": "2026-07-09T12:00:00",
+            "timestamp_end": "2026-07-09T12:00:00.100",
+            "retrieved_docs": [{"text": "supporting evidence", "similarity_score": 0.95}],
+        },
+        {
+            "session_id": "session_gate",
+            "node_id": "generator",
+            "node_type": "generator",
+            "timestamp_start": "2026-07-09T12:00:01",
+            "timestamp_end": "2026-07-09T12:00:01.100",
+            "parent_node_ids": ["retriever"],
+            "inputs": {"input_prompt": "Answer the user"},
+            "outputs": {"response": "{\"answer\": \"ok\"}"},
+        },
+    ]
+
+    replay_engine = RootCauseEngine(mode="replay")
+    replay_calls = {"semantic": 0}
+
+    monkeypatch.setattr(
+        replay_engine.eval_engine,
+        "evaluate_instruction_following",
+        lambda *args, **kwargs: {"score": 1.0, "judge_mode": "deterministic"},
+    )
+    monkeypatch.setattr(
+        replay_engine.eval_engine,
+        "evaluate_groundedness",
+        lambda *args, **kwargs: {"score": 0.99, "judge_mode": "deterministic"},
+    )
+
+    def replay_semantic(*args, **kwargs):
+        replay_calls["semantic"] += 1
+        return {"score": 0.9, "judge_mode": "cached_llm"}
+
+    monkeypatch.setattr(replay_engine.eval_engine, "evaluate_semantic_response_quality", replay_semantic)
+    replay_evidence = replay_engine.collect_evidence(traces[1], traces)
+    assert replay_calls["semantic"] == 1
+    assert replay_evidence["semantic_response_quality_evidence"]["judge_mode"] == "cached_llm"
+
+    live_engine = RootCauseEngine(mode="live")
+
+    monkeypatch.setattr(
+        live_engine.eval_engine,
+        "evaluate_instruction_following",
+        lambda *args, **kwargs: {"score": 1.0, "judge_mode": "deterministic"},
+    )
+    monkeypatch.setattr(
+        live_engine.eval_engine,
+        "evaluate_groundedness",
+        lambda *args, **kwargs: {"score": 0.99, "judge_mode": "deterministic"},
+    )
+
+    def fail_semantic(*args, **kwargs):
+        raise AssertionError("Semantic judge should be skipped by the live gate")
+
+    monkeypatch.setattr(live_engine.eval_engine, "evaluate_semantic_response_quality", fail_semantic)
+    live_evidence = live_engine.collect_evidence(traces[1], traces)
+
+    assert live_evidence["semantic_response_quality_evidence"]["judge_mode"] == "deterministic_gate"
+    assert live_evidence.get("semantic_response_quality") is None
+
 def test_failure_propagation_identifies_root_cause():
     """
     Checks that the root cause engine identifies the correct failure nodes
@@ -483,14 +583,15 @@ def test_failed_parent_filter_uses_each_nodes_failure_type():
     diagnosed = engine.propagate_failures(mock_traces)
     generator = next(node for node in diagnosed if node["node_id"] == "generator_node")
     retriever = next(node for node in diagnosed if node["node_id"] == "retriever_node")
+    merge_node = next(node for node in diagnosed if node["node_id"] == "merge_node")
 
     assert generator["failure_type"] == FailureType.GROUNDING_FAILURE
     assert retriever["failure_type"] == FailureType.RETRIEVAL_FAILURE
-    assert retriever["is_root_cause"] is True
-    assert generator["is_root_cause"] is False
-    candidate_ids = [c["node_id"] for c in retriever["ranked_candidates"]]
+    assert merge_node["failure_type"] == FailureType.GROUNDING_FAILURE
+    candidate_ids = [c["node_id"] for c in merge_node["ranked_candidates"]]
     assert "generator_node" in candidate_ids
     assert "retriever_node" in candidate_ids
+    assert "merge_node" in candidate_ids
 
 
 def test_threshold_calibration_overrides_default_failure_cutoff():
@@ -526,3 +627,125 @@ def test_threshold_calibration_overrides_default_failure_cutoff():
     diagnosed = engine.propagate_failures(mock_traces)
     retriever = diagnosed[0]
     assert retriever["failure_type"] == FailureType.RETRIEVAL_FAILURE
+
+
+def test_temporal_ranking_prefers_later_stronger_failure_over_early_mild_failure(monkeypatch):
+    """Checks we do not always favor the earliest node when an earlier failure is only mild."""
+    engine = RootCauseEngine(causal_origin_weighting=True)
+
+    traces = [
+        {
+            "session_id": "session_temporal_late",
+            "node_id": "planner_early",
+            "node_type": "planner",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "outputs": {"plan": "early"},
+        },
+        {
+            "session_id": "session_temporal_late",
+            "node_id": "generator_late",
+            "node_type": "generator",
+            "timestamp_start": "2026-07-10T12:00:01",
+            "timestamp_end": "2026-07-10T12:00:01.100",
+            "outputs": {"response": "late"},
+        },
+    ]
+
+    def fake_calculate_raw_health(node, _evidence):
+        if node["node_id"] == "planner_early":
+            return {
+                "raw_health": 0.62,
+                "overall_health": 0.62,
+                "metric_scores": {"semantic_response_quality": 0.62},
+                "weakest_dimension": "semantic_response_quality",
+                "weakest_dimension_score": 0.62,
+                "failed_dimensions": ["semantic_response_quality"],
+                "evaluation_status": "complete",
+                "sub_healths": {"semantic_response_quality": 0.62},
+                "legacy_min_health": 0.62,
+                "failure_type": FailureType.PLANNING_FAILURE,
+            }
+        return {
+            "raw_health": 0.12,
+            "overall_health": 0.12,
+            "metric_scores": {"semantic_response_quality": 0.12},
+            "weakest_dimension": "semantic_response_quality",
+            "weakest_dimension_score": 0.12,
+            "failed_dimensions": ["semantic_response_quality"],
+            "evaluation_status": "complete",
+            "sub_healths": {"semantic_response_quality": 0.12},
+            "legacy_min_health": 0.12,
+            "failure_type": FailureType.REASONING_FAILURE,
+        }
+
+    monkeypatch.setattr(engine, "calculate_raw_health", fake_calculate_raw_health)
+    diagnosed = engine.propagate_failures(traces)
+
+    planner = next(node for node in diagnosed if node["node_id"] == "planner_early")
+    generator = next(node for node in diagnosed if node["node_id"] == "generator_late")
+
+    assert planner["is_root_cause"] is False
+    assert generator["is_root_cause"] is True
+    assert generator["causal_origin_score"] > planner["causal_origin_score"]
+
+
+def test_temporal_ranking_keeps_early_root_cause_when_later_node_is_healthy(monkeypatch):
+    """Checks a healthy later node does not displace an actually failing early node."""
+    engine = RootCauseEngine(causal_origin_weighting=True)
+
+    traces = [
+        {
+            "session_id": "session_temporal_early",
+            "node_id": "planner_early",
+            "node_type": "planner",
+            "timestamp_start": "2026-07-10T12:00:00",
+            "timestamp_end": "2026-07-10T12:00:00.100",
+            "outputs": {"plan": "early"},
+        },
+        {
+            "session_id": "session_temporal_early",
+            "node_id": "generator_late",
+            "node_type": "generator",
+            "timestamp_start": "2026-07-10T12:00:01",
+            "timestamp_end": "2026-07-10T12:00:01.100",
+            "outputs": {"response": "late"},
+        },
+    ]
+
+    def fake_calculate_raw_health(node, _evidence):
+        if node["node_id"] == "planner_early":
+            return {
+                "raw_health": 0.10,
+                "overall_health": 0.10,
+                "metric_scores": {"semantic_response_quality": 0.10},
+                "weakest_dimension": "semantic_response_quality",
+                "weakest_dimension_score": 0.10,
+                "failed_dimensions": ["semantic_response_quality"],
+                "evaluation_status": "complete",
+                "sub_healths": {"semantic_response_quality": 0.10},
+                "legacy_min_health": 0.10,
+                "failure_type": FailureType.PLANNING_FAILURE,
+            }
+        return {
+            "raw_health": 0.96,
+            "overall_health": 0.96,
+            "metric_scores": {"semantic_response_quality": 0.96},
+            "weakest_dimension": "semantic_response_quality",
+            "weakest_dimension_score": 0.96,
+            "failed_dimensions": [],
+            "evaluation_status": "complete",
+            "sub_healths": {"semantic_response_quality": 0.96},
+            "legacy_min_health": 0.96,
+            "failure_type": None,
+        }
+
+    monkeypatch.setattr(engine, "calculate_raw_health", fake_calculate_raw_health)
+    diagnosed = engine.propagate_failures(traces)
+
+    planner = next(node for node in diagnosed if node["node_id"] == "planner_early")
+    generator = next(node for node in diagnosed if node["node_id"] == "generator_late")
+
+    assert planner["is_root_cause"] is True
+    assert generator["is_root_cause"] is False
+    assert generator["failed_dimensions"] == []

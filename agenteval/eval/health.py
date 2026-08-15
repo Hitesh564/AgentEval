@@ -32,6 +32,7 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
             "tool_selection": 0.35,
             "tool_arguments": 0.25,
             "instruction_following": 0.25,
+            "semantic_response_quality": 0.10,
             "latency": 0.15,
         },
         threshold_policy={
@@ -39,6 +40,7 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
             "tool_selection": 0.70,
             "tool_arguments": 0.70,
             "instruction_following": 0.70,
+            "semantic_response_quality": 0.70,
             "latency": 0.70,
         },
     ),
@@ -47,6 +49,7 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
         metric_weights={
             "groundedness": 0.35,
             "instruction_following": 0.25,
+            "semantic_response_quality": 0.10,
             "schema_validity": 0.20,
             "latency": 0.20,
         },
@@ -54,6 +57,7 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
             "overall": 0.70,
             "groundedness": 0.70,
             "instruction_following": 0.70,
+            "semantic_response_quality": 0.70,
             "schema_validity": 0.70,
             "latency": 0.70,
         },
@@ -63,12 +67,14 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
         metric_weights={
             "critic_correctness": 0.60,
             "instruction_following": 0.20,
+            "semantic_response_quality": 0.10,
             "latency": 0.20,
         },
         threshold_policy={
             "overall": 0.70,
             "critic_correctness": 0.70,
             "instruction_following": 0.70,
+            "semantic_response_quality": 0.70,
             "latency": 0.70,
         },
     ),
@@ -76,11 +82,13 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
         node_type="custom",
         metric_weights={
             "instruction_following": 0.40,
+            "semantic_response_quality": 0.10,
             "latency": 0.30,
         },
         threshold_policy={
             "overall": 0.70,
             "instruction_following": 0.70,
+            "semantic_response_quality": 0.70,
             "latency": 0.70,
         },
     ),

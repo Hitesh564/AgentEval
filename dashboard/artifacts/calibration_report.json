@@ -1,0 +1,40 @@
+{
+  "confidence": {
+    "artifact_path": "artifacts\\confidence_calibration.json",
+    "fit": null,
+    "holdout": null
+  },
+  "limitations": [
+    "- The workflow only reports holdout metrics when the supplied dataset includes labeled holdout examples.",
+    "- Confidence calibration is skipped if the input file does not provide confidence scores and labels."
+  ],
+  "split": {
+    "calibration_ratio": 0.7,
+    "calibration_size": 63,
+    "holdout_size": 27
+  },
+  "threshold": {
+    "artifact_path": "artifacts\\threshold_calibration.json",
+    "fit": {
+      "calibration_version": "threshold-workflow-v1",
+      "dataset": "manual-calibration",
+      "date": "2026-08-12T13:55:44.692011+00:00",
+      "f1": 0.8648648648648648,
+      "metric": "overall_health",
+      "pr_auc": 0.9563996139117719,
+      "precision": 0.7619047619047619,
+      "recall": 1.0,
+      "roc_auc": 0.8319444444444445,
+      "split": "calibration",
+      "threshold": 1.0
+    },
+    "holdout": {
+      "f1": 0.8,
+      "pr_auc": 0.981933455643466,
+      "precision": 0.6666666666666666,
+      "recall": 1.0,
+      "roc_auc": 0.8981481481481481,
+      "threshold": 1.0
+    }
+  }
+}

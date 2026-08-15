@@ -1,7 +1,5 @@
-import os
-import os
 import time
-import sqlite3
+import os
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List, Optional
@@ -9,6 +7,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from agenteval.sdk.storage import TraceStore
+from agenteval.sdk.database import resolve_database_url
 from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.recommend.engine import RecommendationEngine
 from agenteval.benchmark.cli import evaluate_runs
@@ -17,7 +16,7 @@ load_dotenv()
 
 app = FastAPI(
     title="AgentEval API Dashboard Server",
-    description="Backend server supporting AgentEval's diagnostic dashboard, powered by real SQLite traces."
+    description="Backend server supporting AgentEval's diagnostic dashboard, powered by SQLAlchemy-backed traces."
 )
 
 # Enable CORS for frontend dashboard (port 5173 / default localhost)
@@ -29,10 +28,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SQLite store and engines
-db_path = "agenteval.db"
-store = TraceStore(db_path=db_path)
-rc_engine = RootCauseEngine(db_path=db_path)
+# Database store and engines
+_running_on_railway = bool(
+    os.environ.get("RAILWAY_ENVIRONMENT")
+    or os.environ.get("RAILWAY_PROJECT_ID")
+    or os.environ.get("RAILWAY_SERVICE_ID")
+)
+database_url = resolve_database_url(allow_sqlite_fallback=not _running_on_railway)
+store = TraceStore(database_url=database_url)
+rc_engine = RootCauseEngine(db_path=database_url)
 rec_engine = RecommendationEngine()
 
 def get_current_user_id(x_api_key: Optional[str] = Header(None)) -> str:
@@ -81,7 +85,12 @@ def invalidate_response_cache(user_id: Optional[str] = None):
 @app.get("/api/health")
 def health_check() -> Dict[str, Any]:
     """Basic health check endpoint."""
-    return {"status": "ok", "service": "agenteval-server", "database_exists": os.path.exists(db_path)}
+    return {
+        "status": "ok",
+        "service": "agenteval-server",
+        "database_backend": store.backend_name,
+        "database_configured": bool(os.environ.get("AGENTEVAL_DATABASE_URL")),
+    }
 
 @app.get("/api/sessions", response_model=List[SessionSummary])
 def list_sessions(user_id: str = Depends(get_current_user_id)) -> List[SessionSummary]:
@@ -238,7 +247,7 @@ def get_session_chain(session_id: str, user_id: str = Depends(get_current_user_i
     and the cross-session root-cause determination for Screen 4 (Chain Detail).
     """
     from agenteval.root_cause.cross_session import CrossSessionEngine
-    engine = CrossSessionEngine(db_path=db_path)
+    engine = CrossSessionEngine(db_path=database_url)
     try:
         return engine.diagnose_chain(session_id, user_id=user_id)
     except Exception as e:
@@ -270,8 +279,8 @@ def compare_versions(user_id: str = Depends(get_current_user_id)) -> Dict[str, A
         )
         
     # Import and run calculation logic
-    res_a = evaluate_runs(sessions_a, db_path, "calib", user_id=user_id)
-    res_b = evaluate_runs(sessions_b, db_path, "fixed", user_id=user_id)
+    res_a = evaluate_runs(sessions_a, database_url, "calib", user_id=user_id)
+    res_b = evaluate_runs(sessions_b, database_url, "fixed", user_id=user_id)
 
     
     # Determine dynamic overall verdict

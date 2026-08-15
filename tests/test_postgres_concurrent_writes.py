@@ -31,7 +31,7 @@ def _write_worker(worker_id: int, db_url: str, num_nodes: int):
 
 def test_concurrent_trace_writes():
     """Validates concurrent multithreaded trace writing without row loss or lock corruption."""
-    db_url = os.environ.get("AGENTEVAL_DATABASE_URL", "sqlite:///test_concurrent_writes.db")
+    db_url = "sqlite:///test_concurrent_writes.db"
     print(f"\n--- Running Concurrent Trace Write Test against: {db_url} ---")
     
     num_workers = 10

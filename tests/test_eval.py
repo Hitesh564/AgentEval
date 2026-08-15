@@ -1,7 +1,7 @@
 import pytest
 import pytest
 
-from agenteval.eval.metrics import EvaluationEngine, cosine_similarity
+from agenteval.eval.metrics import EvaluationEngine, cosine_similarity, _build_cache_key
 from agenteval.eval.health import get_health_config, weighted_health
 from agenteval.eval.calibration import (
     select_threshold,
@@ -353,3 +353,182 @@ def test_cost_guard_activation(monkeypatch):
         "Here is the markdown response."
     )
     assert res["judge_mode"] == "heuristic_fallback"
+
+
+def test_semantic_response_quality_replay_uses_neutral_fallback_without_cache(monkeypatch):
+    """Checks replay mode does not invent semantic quality when the cache is missing."""
+    engine = EvaluationEngine(mode="replay")
+
+    class EmptyStore:
+        def get_cached_result(self, *_args, **_kwargs):
+            return None
+
+        def set_cached_result(self, *_args, **_kwargs):
+            raise AssertionError("Replay fallback should not write a cache entry")
+
+    engine.store = EmptyStore()
+
+    result = engine.evaluate_semantic_response_quality(
+        question="What is the status?",
+        conversation_history="User asked for a concise answer.",
+        response="The status is healthy.",
+    )
+
+    assert result["method"] == "semantic_response_quality"
+    assert result["status"] == "fallback"
+    assert result["judge_mode"] == "heuristic_fallback"
+    assert result["score"] == pytest.approx(0.5)
+    assert result["evidence"]["reason"] == "replay_cache_miss_neutral_fallback"
+    assert "question_excerpt" in result["evidence"]
+    assert "response_excerpt" in result["evidence"]
+
+
+def test_semantic_response_quality_live_path_caches_score(monkeypatch):
+    """Checks the live semantic judge parses a score and stores the cached result."""
+    import agenteval.eval.metrics as metrics_module
+
+    engine = EvaluationEngine(mode="live")
+    cached = {}
+
+    class CacheStore:
+        def get_cached_result(self, input_hash, legacy_input_hashes=None):
+            return cached.get(input_hash)
+
+        def set_cached_result(self, input_hash, metric_name, result):
+            cached[input_hash] = result
+            cached[input_hash]["metric_name"] = metric_name
+
+    engine.store = CacheStore()
+    monkeypatch.setattr(metrics_module, "get_llm_response", lambda *_args, **_kwargs: "0.84")
+
+    result = engine.evaluate_semantic_response_quality(
+        question="Summarize the issue.",
+        conversation_history="User described the bug earlier.",
+        response="The issue is in the retriever stage.",
+    )
+
+    assert result["status"] == "complete"
+    assert result["judge_mode"] == "llm"
+    assert result["score"] == pytest.approx(0.84)
+    assert result["evidence"]["reason"] == "llm_judged_semantic_quality"
+    assert len(cached) == 1
+
+
+def test_cache_key_is_canonical_and_sensitive_to_model_prompt_and_input():
+    """Checks the cache key changes when model, prompt, version, or input changes."""
+    base = _build_cache_key(
+        "semantic_response_quality",
+        "v2",
+        "gemini/gemini-3.5-flash",
+        {
+            "question": "What is the status?",
+            "conversation_history": "User asked for a concise answer.",
+            "response": "The status is healthy.",
+        },
+    )
+    same = _build_cache_key(
+        "semantic_response_quality",
+        "v2",
+        "gemini/gemini-3.5-flash",
+        {
+            "question": "What is the status?",
+            "conversation_history": "User asked for a concise answer.",
+            "response": "The status is healthy.",
+        },
+    )
+    different_model = _build_cache_key(
+        "semantic_response_quality",
+        "v2",
+        "gemini/gemini-2.5-flash",
+        {
+            "question": "What is the status?",
+            "conversation_history": "User asked for a concise answer.",
+            "response": "The status is healthy.",
+        },
+    )
+    different_version = _build_cache_key(
+        "semantic_response_quality",
+        "v3",
+        "gemini/gemini-3.5-flash",
+        {
+            "question": "What is the status?",
+            "conversation_history": "User asked for a concise answer.",
+            "response": "The status is healthy.",
+        },
+    )
+    different_input = _build_cache_key(
+        "semantic_response_quality",
+        "v2",
+        "gemini/gemini-3.5-flash",
+        {
+            "question": "What is the status?",
+            "conversation_history": "Different history.",
+            "response": "The status is healthy.",
+        },
+    )
+    with_prompt = _build_cache_key(
+        "instruction_following",
+        "v2",
+        "gemini/gemini-3.5-flash",
+        {"system_prompt": "Return markdown only.", "response": "Here you go."},
+        system_prompt="Return markdown only.",
+    )
+    with_prompt_variant = _build_cache_key(
+        "instruction_following",
+        "v2",
+        "gemini/gemini-3.5-flash",
+        {"system_prompt": "Return plain text only.", "response": "Here you go."},
+        system_prompt="Return plain text only.",
+    )
+
+    assert base == same
+    assert base != different_model
+    assert base != different_version
+    assert base != different_input
+    assert with_prompt != with_prompt_variant
+
+
+def test_semantic_response_quality_live_uses_cache_before_llm(monkeypatch):
+    """Checks a warm cache suppresses the live semantic judge and uses the legacy fallback hash too."""
+    import agenteval.eval.metrics as metrics_module
+
+    engine = EvaluationEngine(mode="live")
+    calls = []
+
+    cached_result = {
+        "score": 0.73,
+        "value": 0.73,
+        "status": "complete",
+        "method": "semantic_response_quality",
+        "judge_mode": "cached_llm",
+        "version": "v2",
+        "evidence": {"reason": "warm-cache-hit"},
+    }
+
+    class CacheStore:
+        def get_cached_result(self, input_hash, legacy_input_hashes=None):
+            calls.append((input_hash, tuple(legacy_input_hashes or [])))
+            if legacy_input_hashes:
+                return cached_result
+            return None
+
+        def set_cached_result(self, *_args, **_kwargs):
+            raise AssertionError("Warm-cache read should not write a result")
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LLM should not be called when cache is warm")
+
+    engine.store = CacheStore()
+    monkeypatch.setattr(metrics_module, "get_llm_response", fail_if_called)
+
+    result = engine.evaluate_semantic_response_quality(
+        question="Summarize the issue.",
+        conversation_history="User described the bug earlier.",
+        response="The issue is in the retriever stage.",
+    )
+
+    assert result["score"] == pytest.approx(0.73)
+    assert result["judge_mode"] == "cached_llm"
+    assert len(calls) == 1
+    assert len(calls[0][0]) == 64
+    assert len(calls[0][1]) == 1

@@ -1,6 +1,9 @@
 from agenteval.adapters.who_when_adapter import (
     aggregate_records,
     evaluate_case,
+    _agent_label_from_session,
+    _agent_label_from_turn,
+    _role_to_node_type,
     WhoWhenEvaluationRecord,
 )
 
@@ -39,7 +42,7 @@ def test_who_when_case_reports_agent_and_step():
         "question_ID": "1",
         "question": "Question?",
         "mistake_agent": "assistant",
-        "mistake_step": "assistant",
+        "mistake_step": "3",
         "history": [
             {"role": "human", "content": "Hi"},
             {"role": "assistant", "content": "First answer"},
@@ -55,7 +58,7 @@ def test_who_when_case_reports_agent_and_step():
     assert record.agent_correct is True
     assert record.step_correct is True
     assert record.exact_match is True
-    assert record.predicted_step == "assistant"
+    assert record.predicted_step == "step_3"
     assert store.links
 
 
@@ -94,12 +97,18 @@ def test_who_when_aggregate_records_includes_step_metrics():
     assert summary["assumptions"]
 
 
+def test_who_when_role_mapping_treats_retrieval_agents_as_retrievers():
+    assert _role_to_node_type("WebSurfer") == "generator"
+    assert _role_to_node_type("FileSurfer") == "generator"
+    assert _role_to_node_type("Orchestrator (thought)") == "planner"
+
+
 def test_who_when_prediction_is_invariant_to_ground_truth_label_changes():
     base_item = {
         "question_ID": "1",
         "question": "Question?",
         "mistake_agent": "assistant",
-        "mistake_step": "assistant",
+        "mistake_step": "3",
         "history": [
             {"role": "human", "content": "Hi"},
             {"role": "assistant", "content": "First answer"},
@@ -118,3 +127,13 @@ def test_who_when_prediction_is_invariant_to_ground_truth_label_changes():
     assert base_record.predicted_step == changed_record.predicted_step
     assert base_record.agent_correct != changed_record.agent_correct
     assert base_record.step_correct != changed_record.step_correct
+
+
+def test_who_when_session_label_preserves_multi_token_agents():
+    assert _agent_label_from_session("session_abc_step12_Statistics_Expert") == "statistics_expert"
+    assert _agent_label_from_session("session_abc_step3_WeatherData_Expert") == "weatherdata_expert"
+
+
+def test_who_when_turn_label_prefers_canonical_history_name():
+    assert _agent_label_from_turn({"role": "assistant", "name": "Statistics_Expert"}) == "statistics_expert"
+    assert _agent_label_from_turn({"role": "assistant", "name": "WeatherData_Expert"}) == "weatherdata_expert"

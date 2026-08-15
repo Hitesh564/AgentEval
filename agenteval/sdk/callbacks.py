@@ -14,13 +14,21 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
     """
     Real, production-ready LangChain/LangGraph callback handler.
     Automatically logs node transitions, tool calls, and retrieval events
-    to the TraceStore (SQLite database) with parent-node relationships.
+    to the TraceStore (SQLAlchemy-backed database) with parent-node relationships.
     """
-    def __init__(self, session_id: str, db_path: str = "agenteval.db", parent_session_id: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        session_id: str,
+        db_path: Optional[str] = None,
+        *,
+        database_url: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ):
         self.session_id = session_id
-        self.db_path = db_path
+        self.db_path = database_url or db_path or "agenteval.db"
         self.parent_session_id = parent_session_id
-        self.store = TraceStore(db_path=db_path)
+        self.store = TraceStore(db_path=self.db_path)
         # Maps active run_id -> active node trace dict
         self.active_runs: Dict[str, Dict[str, Any]] = {}
         # Lists completed nodes to link parent_node_ids

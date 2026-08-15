@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from agenteval.sdk.storage import TraceStore
 from agenteval.sdk.tracer import trace
+from agenteval.root_cause.engine import RootCauseEngine
 from agenteval.server.main import app
 
 TEST_DB = "test_multi_user_isolation.db"
@@ -25,11 +26,13 @@ def setup_db():
     
     # Temporarily override main.py database config
     import agenteval.server.main as main_mod
-    orig_db = main_mod.db_path
+    orig_db = main_mod.database_url
     orig_store = main_mod.store
+    orig_rc_engine = main_mod.rc_engine
     
-    main_mod.db_path = TEST_DB
+    main_mod.database_url = TEST_DB
     main_mod.store = store
+    main_mod.rc_engine = RootCauseEngine(db_path=TEST_DB)
     
     yield
     
@@ -37,8 +40,9 @@ def setup_db():
     store.clear_user_data("alice")
     store.clear_user_data("bob")
     store.close()
-    main_mod.db_path = orig_db
+    main_mod.database_url = orig_db
     main_mod.store = orig_store
+    main_mod.rc_engine = orig_rc_engine
     if os.path.exists(TEST_DB):
         os.remove(TEST_DB)
 

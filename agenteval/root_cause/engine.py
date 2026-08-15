@@ -71,6 +71,94 @@ class RootCauseEngine:
         """Returns the active failure threshold for a node type."""
         return self._calibrated_failure_threshold(node_type, get_health_config(node_type))
 
+    def _semantic_gating_enabled(self) -> bool:
+        value = os.environ.get("AGENTEVAL_SEMANTIC_GATING", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _should_gate_semantic_quality(
+        self,
+        node: Dict[str, Any],
+        evidence: Dict[str, Any],
+        output_text: str,
+    ) -> bool:
+        if self.eval_engine.mode != "live" or not self._semantic_gating_enabled():
+            return False
+        if not output_text.strip():
+            return True
+
+        node_type = node["node_type"]
+        if node_type == "planner":
+            tool_margin = evidence.get("tool_margin")
+            return (
+                evidence.get("instruction_following") is not None
+                and evidence.get("instruction_following") >= 0.95
+                and tool_margin is not None
+                and tool_margin >= 0.25
+            )
+        if node_type == "generator" or node["node_id"] == "synthesizer":
+            groundedness = evidence.get("groundedness_ratio")
+            return (
+                groundedness is not None
+                and groundedness >= 0.95
+                and evidence.get("instruction_following") is not None
+                and evidence.get("instruction_following") >= 0.95
+                and evidence.get("json_valid", 1.0) >= 1.0
+            )
+        if node_type == "critic":
+            correctness = evidence.get("critic_correctness")
+            return (
+                correctness is not None
+                and correctness >= 1.0
+                and evidence.get("instruction_following") is not None
+                and evidence.get("instruction_following") >= 0.95
+            )
+        return False
+
+    def _build_node_health_evidence(
+        self,
+        node: Dict[str, Any],
+        health_details: Dict[str, Any],
+        final_evidence: Dict[str, Any],
+        retry_count: int,
+        failure_threshold: float,
+    ) -> Dict[str, Any]:
+        metric_scores = health_details.get("metric_scores", {}) or {}
+        deterministic_signals: Dict[str, Optional[float]] = {
+            "execution_success": 1.0 if health_details.get("failure_type") is None else 0.0,
+            "retry_health": 1.0 if retry_count <= 0 else max(0.0, 1.0 - (0.03 * retry_count)),
+            "latency_health": metric_scores.get("latency"),
+            "output_validity": final_evidence.get("json_valid"),
+            "tool_health": None,
+        }
+
+        if node["node_type"] == "planner":
+            tool_scores = [
+                metric_scores.get("tool_selection"),
+                metric_scores.get("tool_arguments"),
+            ]
+            present_tool_scores = [float(score) for score in tool_scores if score is not None]
+            if present_tool_scores:
+                deterministic_signals["tool_health"] = sum(present_tool_scores) / len(present_tool_scores)
+        elif node["node_type"] == "generator" or node["node_id"] == "synthesizer":
+            groundedness = metric_scores.get("groundedness")
+            if groundedness is not None:
+                deterministic_signals["tool_health"] = float(groundedness)
+        elif node["node_type"] == "critic":
+            correctness = metric_scores.get("critic_correctness")
+            if correctness is not None:
+                deterministic_signals["tool_health"] = float(correctness)
+
+        available_signals = [float(value) for value in deterministic_signals.values() if value is not None]
+        deterministic_score = sum(available_signals) / len(available_signals) if available_signals else None
+
+        return {
+            "score": deterministic_score,
+            "threshold": failure_threshold,
+            "signals": deterministic_signals,
+            "status": "complete" if deterministic_score is not None else "unavailable",
+            "method": "deterministic_node_health",
+        }
+
     def collect_evidence(self, node: Dict[str, Any], session_traces: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Collects raw, measurable signals from a trace node.
@@ -80,6 +168,7 @@ class RootCauseEngine:
             "groundedness_ratio": None,
             "tool_margin": None,
             "critic_correctness": None,
+            "semantic_response_quality": None,
             "latency": 0.0,
             "json_valid": 1.0,
             "instruction_following": 1.0,
@@ -87,6 +176,7 @@ class RootCauseEngine:
             "retrieval_evidence": None,
             "groundedness_evidence": None,
             "tool_evidence": None,
+            "semantic_response_quality_evidence": None,
             "latency_evidence": None,
         }
         inputs = node.get("inputs") or {}
@@ -223,7 +313,34 @@ class RootCauseEngine:
                     evidence["critic_correctness"] = 0.0 if is_pass else 1.0
                 else:
                     evidence["critic_correctness"] = 0.0 if is_fail else 1.0
-                
+
+        # 6. Generic semantic response quality for conversational nodes.
+        if node["node_type"] in {"planner", "generator", "critic", "custom"} and output_text:
+            if self._should_gate_semantic_quality(node, evidence, output_text):
+                evidence["semantic_response_quality_evidence"] = {
+                    "score": None,
+                    "value": None,
+                    "status": "gated",
+                    "method": "semantic_response_quality",
+                    "judge_mode": "deterministic_gate",
+                    "evidence": {
+                        "reason": "live_semantic_gate_skipped_due_to_confident_deterministic_signals",
+                    },
+                }
+            else:
+                semantic_res = self.eval_engine.evaluate_semantic_response_quality(
+                    str(query) if query is not None else "",
+                    str(inputs.get("input_prompt") or ""),
+                    output_text,
+                )
+                evidence["semantic_response_quality_evidence"] = semantic_res
+                has_conversation_context = bool(str(inputs.get("input_prompt") or "").strip())
+                if semantic_res.get("judge_mode") in ("llm", "cached_llm") or (
+                    semantic_res.get("judge_mode") == "heuristic_fallback" and has_conversation_context
+                ):
+                    evidence["semantic_response_quality"] = semantic_res.get("score")
+                    evidence["judge_mode"] = semantic_res["judge_mode"]
+
         return evidence
 
     def calculate_raw_health(self, node: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, Any]:
@@ -257,12 +374,16 @@ class RootCauseEngine:
                 metric_scores["tool_arguments"] = float(tool_evidence["argument_score"])
             if evidence.get("instruction_following") is not None:
                 metric_scores["instruction_following"] = float(evidence["instruction_following"])
+            if evidence.get("semantic_response_quality") is not None:
+                metric_scores["semantic_response_quality"] = float(evidence["semantic_response_quality"])
 
         if node_type == "generator" or node["node_id"] == "synthesizer":
             if evidence.get("groundedness_ratio") is not None:
                 metric_scores["groundedness"] = float(evidence["groundedness_ratio"])
             if evidence.get("instruction_following") is not None:
                 metric_scores["instruction_following"] = float(evidence["instruction_following"])
+            if evidence.get("semantic_response_quality") is not None:
+                metric_scores["semantic_response_quality"] = float(evidence["semantic_response_quality"])
             if evidence.get("json_valid") is not None:
                 metric_scores["schema_validity"] = float(evidence["json_valid"])
 
@@ -271,6 +392,8 @@ class RootCauseEngine:
                 metric_scores["critic_correctness"] = float(evidence["critic_correctness"])
             if evidence.get("instruction_following") is not None:
                 metric_scores["instruction_following"] = float(evidence["instruction_following"])
+            if evidence.get("semantic_response_quality") is not None:
+                metric_scores["semantic_response_quality"] = float(evidence["semantic_response_quality"])
 
         health = weighted_health(metric_scores, config)
         raw_health = health["overall_health"] if health["overall_health"] is not None else 0.0
@@ -292,6 +415,8 @@ class RootCauseEngine:
                     failure_type = FailureType.REASONING_FAILURE
             elif worst_dim in ("grounding", "groundedness"):
                 failure_type = FailureType.GROUNDING_FAILURE
+            elif worst_dim == "semantic_response_quality":
+                failure_type = FailureType.PLANNING_FAILURE if node_type == "planner" else FailureType.REASONING_FAILURE
             elif worst_dim in ("formatting", "schema_validity"):
                 failure_type = FailureType.OUTPUT_FORMATTING_FAILURE
             elif worst_dim == "latency":
@@ -358,6 +483,14 @@ class RootCauseEngine:
             failure_threshold = self._calibrated_failure_threshold(final_attempt["node_type"], get_health_config(final_attempt["node_type"]))
             if consolidated_health >= failure_threshold:
                 failure_type = None
+
+            final_evidence["node_health_evidence"] = self._build_node_health_evidence(
+                final_attempt,
+                health_details,
+                final_evidence,
+                n_retries,
+                failure_threshold,
+            )
             
             node_maps[node_id] = {
                 "node_id": node_id,
@@ -414,7 +547,8 @@ class RootCauseEngine:
             upstream_dependency_score = sum(upstream_scores) / len(upstream_scores) if upstream_scores else 0.0
             downstream_scores = [max(0.0, 1.0 - node_maps[c]["raw_health"]) for c in child_ids if c in node_maps]
             downstream_consistency_score = sum(downstream_scores) / len(downstream_scores) if downstream_scores else 0.0
-            temporal_score = 1.0 - (idx / (total_nodes - 1)) if total_nodes > 1 else 1.0
+            temporal_prior = 1.0 - (idx / (total_nodes - 1)) if total_nodes > 1 else 1.0
+            temporal_score = temporal_prior if local_failure_score >= 0.5 else 0.0
             origin_prior = max(0.0, min(1.0, 1.0 - upstream_dependency_score))
 
             components = {

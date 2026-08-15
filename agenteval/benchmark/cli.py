@@ -6,6 +6,7 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from agenteval.benchmark.metrics import BenchmarkRecord, benchmark_summary, render_benchmark_markdown
+from agenteval.sdk.database import resolve_database_url
 from agenteval.utils.miniyaml import load_structured_data
 
 
@@ -414,13 +415,13 @@ def main():
     compare_parser = subparsers.add_parser("compare", help="Compare version A and B runs")
     compare_parser.add_argument("version_a", type=str, help="Prefix/Identifier for Version A runs (e.g. calib)")
     compare_parser.add_argument("version_b", type=str, help="Prefix/Identifier for Version B runs")
-    compare_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
+    compare_parser.add_argument("--database-url", "--db", dest="database_url", type=str, default=None, help="AGENTEVAL_DATABASE_URL or SQLite fallback path")
     compare_parser.add_argument("--mode", type=str, choices=["replay", "live"], default="replay", help="Evaluation mode (replay or live)")
     compare_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
     compare_parser.add_argument("--seed", type=int, default=0, help="Deterministic seed for baseline sampling")
 
     benchmark_parser = subparsers.add_parser("benchmark", help="Run benchmark metrics and baselines on stored traces")
-    benchmark_parser.add_argument("--db", type=str, default="agenteval.db", help="Path to SQLite database")
+    benchmark_parser.add_argument("--database-url", "--db", dest="database_url", type=str, default=None, help="AGENTEVAL_DATABASE_URL or SQLite fallback path")
     benchmark_parser.add_argument("--mode", type=str, choices=["replay", "live"], default="replay", help="Evaluation mode (replay or live)")
     benchmark_parser.add_argument("--fixtures", type=str, default="examples/fixtures/test_cases.yaml", help="Path to fixtures YAML file")
     benchmark_parser.add_argument("--prefix", type=str, default="", help="Optional session prefix filter")
@@ -433,10 +434,7 @@ def main():
     if args.command == "compare":
         from agenteval.sdk.storage import TraceStore
 
-        db_path = args.db
-        if not os.path.exists(db_path):
-            print(f"Error: Database file not found at {db_path}")
-            return
+        db_path = resolve_database_url(args.database_url, allow_sqlite_fallback=True)
             
         # Retrieve sessions from database
         store = TraceStore(db_path=db_path)
@@ -604,10 +602,7 @@ def main():
     elif args.command == "benchmark":
         from agenteval.sdk.storage import TraceStore
 
-        db_path = args.db
-        if not os.path.exists(db_path):
-            print(f"Error: Database file not found at {db_path}")
-            return
+        db_path = resolve_database_url(args.database_url, allow_sqlite_fallback=True)
 
         store = TraceStore(db_path=db_path)
         sessions = store.get_distinct_session_ids(user_id=None)

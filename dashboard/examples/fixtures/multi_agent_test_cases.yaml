@@ -1,0 +1,79 @@
+- id: "multi_agent_case_001"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "retrieval_agent"
+  expected_root_cause_session: "retrieval_agent"
+  expected_root_cause_node: "retrieval_retriever"
+  downstream_effect: ["scoring_agent inherits bad input", "conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_002"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "retrieval_agent"
+  expected_root_cause_session: "retrieval_agent"
+  expected_root_cause_node: "retrieval_retriever"
+  downstream_effect: ["scoring_agent inherits bad input", "conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_003"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "scoring_agent"
+  expected_root_cause_session: "scoring_agent"
+  expected_root_cause_node: "scoring_generator"
+  downstream_effect: ["conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_004"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "scoring_agent"
+  expected_root_cause_session: "scoring_agent"
+  expected_root_cause_node: "scoring_generator"
+  downstream_effect: ["conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_005"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "conductor_agent"
+  expected_root_cause_session: "conductor_agent"
+  expected_root_cause_node: "conductor_generator"
+  downstream_effect: []
+  is_clean: false
+
+- id: "multi_agent_case_006"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "conductor_agent"
+  expected_root_cause_session: "conductor_agent"
+  expected_root_cause_node: "conductor_generator"
+  downstream_effect: []
+  is_clean: false
+
+- id: "multi_agent_case_007"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "co_contribution"
+  expected_root_cause_session: "ambiguous"
+  expected_root_cause_node: "none"
+  downstream_effect: ["conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_008"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "co_contribution_borderline"
+  expected_root_cause_session: "ambiguous"
+  expected_root_cause_node: "none"
+  downstream_effect: ["conductor_agent inherits bad input"]
+  is_clean: false
+
+- id: "multi_agent_case_009"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "none"
+  expected_root_cause_session: "none"
+  expected_root_cause_node: "none"
+  downstream_effect: []
+  is_clean: true
+
+- id: "multi_agent_case_010"
+  query: "Plan order cancellation and refund check"
+  injected_fault_in: "none"
+  expected_root_cause_session: "none"
+  expected_root_cause_node: "none"
+  downstream_effect: []
+  is_clean: true

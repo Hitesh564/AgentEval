@@ -1,0 +1,18 @@
+{
+  "calibration_version": "threshold-workflow-v1",
+  "configuration": {
+    "calibration_ratio": 0.7,
+    "seed": 13
+  },
+  "dataset": "manual-calibration",
+  "dataset_version": "unknown",
+  "f1": 0.8648648648648648,
+  "metric": "overall_health",
+  "pr_auc": 0.9563996139117719,
+  "precision": 0.7619047619047619,
+  "recall": 1.0,
+  "roc_auc": 0.8319444444444445,
+  "split": "calibration",
+  "threshold": 1.0,
+  "timestamp": "2026-08-12T13:55:44.692011+00:00"
+}

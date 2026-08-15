@@ -1,99 +1,41 @@
-import os
 import json
 import hashlib
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from sqlalchemy import (
-    create_engine, MetaData, Table, Column, Integer, String, Text, Float,
-    PrimaryKeyConstraint, UniqueConstraint, select, insert, update, delete, or_, and_, func
+    create_engine, select, insert, update, delete, or_, and_, func
 )
-from sqlalchemy.pool import NullPool
+from agenteval.sdk.database import build_engine_options, database_backend_name, resolve_database_url
+from agenteval.sdk.schema import metadata, users, traces, eval_cache, session_links
 
 class TraceStore:
-    def __init__(self, db_path: str = "agenteval.db"):
-        self.db_path = db_path
-        
-        # Resolve database URL
-        env_url = os.environ.get("AGENTEVAL_DATABASE_URL")
-        if db_path.startswith("postgresql://") or db_path.startswith("postgres://") or db_path.startswith("sqlite://"):
-            db_url = db_path
-        elif db_path != "agenteval.db":
-            normalized = db_path.replace("\\", "/")
-            db_url = f"sqlite:///{normalized}"
-        elif env_url:
-            db_url = env_url
-        else:
-            db_url = f"sqlite:///{db_path}"
-            
-        if db_url.startswith("postgres://"):
-            db_url = db_url.replace("postgres://", "postgresql://", 1)
-            
-        self.db_url = db_url
-        
-        connect_args = {}
-        engine_kwargs = {"pool_pre_ping": True}
-        if db_url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
-            engine_kwargs["poolclass"] = NullPool
-            
-        self.engine = create_engine(self.db_url, connect_args=connect_args, **engine_kwargs)
-        self.metadata = MetaData()
-
-        # Define schema tables
-        self.users = Table(
-            "users",
-            self.metadata,
-            Column("user_id", String, primary_key=True),
-            Column("api_key_hash", String, nullable=False, unique=True),
-            Column("created_at", String, nullable=False),
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        *,
+        database_url: Optional[str] = None,
+        allow_sqlite_fallback: bool = True,
+        init_schema: Optional[bool] = None,
+    ):
+        self.db_path = db_path or database_url or "agenteval.db"
+        self.db_url = resolve_database_url(
+            database_url or db_path,
+            allow_sqlite_fallback=allow_sqlite_fallback,
         )
+        self.backend_name = database_backend_name(self.db_url)
+        self.engine = create_engine(self.db_url, **build_engine_options(self.db_url))
+        self.metadata = metadata
+        self.users = users
+        self.traces = traces
+        self.eval_cache = eval_cache
+        self.session_links = session_links
 
-        self.traces = Table(
-            "traces",
-            self.metadata,
-            Column("id", Integer, primary_key=True, autoincrement=True),
-            Column("session_id", String, nullable=False),
-            Column("node_id", String, nullable=False),
-            Column("node_type", String, nullable=False),
-            Column("timestamp_start", String, nullable=False),
-            Column("timestamp_end", String, nullable=False),
-            Column("inputs", Text, nullable=True),
-            Column("outputs", Text, nullable=True),
-            Column("tool_name", String, nullable=True),
-            Column("tool_args", Text, nullable=True),
-            Column("tool_result", Text, nullable=True),
-            Column("retrieved_docs", Text, nullable=True),
-            Column("tokens_in", Integer, default=0),
-            Column("tokens_out", Integer, default=0),
-            Column("cost_usd", Float, default=0.0),
-            Column("parent_node_ids", Text, nullable=True),
-            Column("attempt_number", Integer, default=1),
-            Column("user_id", String, nullable=True),
-            UniqueConstraint("session_id", "node_id", "attempt_number", name="uq_session_node_attempt"),
-        )
+        if init_schema is None:
+            init_schema = self.backend_name == "sqlite"
 
-        self.eval_cache = Table(
-            "eval_cache",
-            self.metadata,
-            Column("input_hash", String, primary_key=True),
-            Column("metric_name", String, nullable=False),
-            Column("result_json", Text, nullable=False),
-            Column("timestamp", String, nullable=False),
-        )
-
-        self.session_links = Table(
-            "session_links",
-            self.metadata,
-            Column("child_session_id", String, nullable=False),
-            Column("parent_session_id", String, nullable=False),
-            Column("link_reason", String, nullable=True),
-            Column("timestamp", String, nullable=False),
-            Column("user_id", String, nullable=True),
-            PrimaryKeyConstraint("child_session_id", "parent_session_id"),
-        )
-
-        self.init_db()
+        if init_schema:
+            self.init_db()
 
     def init_db(self):
         """Initializes database tables using SQLAlchemy metadata."""
@@ -130,13 +72,26 @@ class TraceStore:
                 )
                 conn.execute(stmt_insert)
 
-    def get_cached_result(self, input_hash: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a cached evaluation result if it exists."""
-        stmt = select(self.eval_cache.c.result_json).where(self.eval_cache.c.input_hash == input_hash)
+    def get_cached_result(self, input_hash: str, legacy_input_hashes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """Retrieves a cached evaluation result if it exists.
+
+        The primary lookup uses the canonical SHA-256 cache key. Optional legacy
+        hashes let us read pre-hardened MD5-backed cache rows without rewriting
+        stored data.
+        """
+        candidate_hashes = [input_hash]
+        if legacy_input_hashes:
+            for legacy_hash in legacy_input_hashes:
+                if legacy_hash and legacy_hash not in candidate_hashes:
+                    candidate_hashes.append(legacy_hash)
+
         with self.engine.connect() as conn:
-            row = conn.execute(stmt).fetchone()
-            if row:
-                return json.loads(row[0])
+            for candidate_hash in candidate_hashes:
+                row = conn.execute(
+                    select(self.eval_cache.c.result_json).where(self.eval_cache.c.input_hash == candidate_hash)
+                ).fetchone()
+                if row:
+                    return json.loads(row[0])
             return None
 
     def set_cached_result(self, input_hash: str, metric_name: str, result: Dict[str, Any]):

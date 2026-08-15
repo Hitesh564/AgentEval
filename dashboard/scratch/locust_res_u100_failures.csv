@@ -1,0 +1,5 @@
+Method,Name,Error,Occurrences
+GET,/api/sessions/[id]/trace,HTTPError('500 Server Error: Internal Server Error for url: /api/sessions/[id]/trace'),23
+GET,/api/benchmark/compare,HTTPError('500 Server Error: Internal Server Error for url: /api/benchmark/compare'),5
+GET,/api/sessions,HTTPError('500 Server Error: Internal Server Error for url: /api/sessions'),14
+GET,/api/sessions/[id]/chain,HTTPError('500 Server Error: Internal Server Error for url: /api/sessions/[id]/chain'),49

@@ -42,6 +42,40 @@ def estimate_call_cost(prompt: str, model: str, max_tokens: int) -> float:
     return est_in + est_out
 
 
+def _stable_json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _build_cache_key(
+    metric_name: str,
+    evaluator_version: str,
+    model_name: str,
+    evaluation_input: Any,
+    *,
+    system_prompt: Optional[str] = None,
+) -> str:
+    payload = {
+        "evaluation_input": evaluation_input,
+        "evaluator_version": evaluator_version,
+        "metric_name": metric_name,
+        "model_name": model_name,
+        "system_prompt": system_prompt,
+    }
+    canonical = _stable_json_dumps(payload)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _legacy_cache_hash(raw_input: str) -> str:
+    return hashlib.md5(raw_input.encode("utf-8")).hexdigest()
+
+
+def _resolve_model_name(explicit_model_name: Optional[str] = None) -> str:
+    env_model = os.environ.get("LITELLM_MODEL") or os.environ.get("AGENTEVAL_MODEL")
+    if explicit_model_name and explicit_model_name != "gemini/gemini-3.5-flash":
+        return explicit_model_name
+    return env_model or explicit_model_name or "gemini/gemini-3.5-flash"
+
+
 def _build_metric_result(
     value: Optional[float],
     status: str,
@@ -95,7 +129,11 @@ def cosine_similarity(vector_a: Sequence[float], vector_b: Sequence[float]) -> f
         return 0.0
     return dot / (norm_a * norm_b)
 
-def get_llm_response(prompt: str, system_prompt: Optional[str] = None) -> Optional[str]:
+def get_llm_response(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> Optional[str]:
     """Helper to call LiteLLM with Gemini/fallback model if API keys are present."""
     global CUMULATIVE_COST
     if not litellm:
@@ -106,8 +144,8 @@ def get_llm_response(prompt: str, system_prompt: Optional[str] = None) -> Option
     if not api_key_present:
         return None
         
-    # Use swappable model via LITELLM_MODEL, AGENTEVAL_MODEL, or gemini-3.5-flash default
-    model = os.environ.get("LITELLM_MODEL") or os.environ.get("AGENTEVAL_MODEL", "gemini/gemini-3.5-flash")
+    # Use swappable model via explicit override, LITELLM_MODEL, AGENTEVAL_MODEL, or gemini-3.5-flash default
+    model = _resolve_model_name(model_name)
     max_cost_limit = float(os.environ.get("AGENTEVAL_MAX_COST_USD_PER_RUN", "1.00"))
     max_tokens_limit = int(os.environ.get("AGENTEVAL_MAX_TOKENS_PER_CALL", "4096"))
     
@@ -181,22 +219,36 @@ class EvaluationEngine:
         from agenteval.sdk.storage import TraceStore
         self.store = TraceStore(db_path=db_path)
 
+    def _cache_lookup(self, cache_key: str, legacy_key: Optional[str], metric_name: str) -> Optional[Dict[str, Any]]:
+        legacy_keys = [legacy_key] if legacy_key else None
+        cached = self.store.get_cached_result(cache_key, legacy_keys)
+        if cached:
+            cached.setdefault("status", "complete")
+            cached.setdefault("method", metric_name)
+            cached.setdefault("judge_mode", "cached_llm")
+        return cached
+
     def evaluate_instruction_following(self, system_prompt: str, response: str) -> Dict[str, Any]:
         """
         LLM-judge score (0.0 to 1.0) assessing how well the response followed instructions.
         """
-        input_str = f"{system_prompt}|||{response}"
-        input_hash = hashlib.md5(input_str.encode('utf-8')).hexdigest()
+        model_name = _resolve_model_name(self.model_name)
+        legacy_input = f"{system_prompt}|||{response}"
+        input_hash = _build_cache_key(
+            "instruction_following",
+            _CACHE_VERSION,
+            model_name,
+            {"system_prompt": system_prompt, "response": response},
+            system_prompt=system_prompt,
+        )
+        legacy_hash = _legacy_cache_hash(legacy_input)
         
-        # Replay Cache Lookup
+        cached = self._cache_lookup(input_hash, legacy_hash, "instruction_following")
+        if cached:
+            return cached
         if self.mode == "replay":
-            cached = self.store.get_cached_result(input_hash)
-            if cached:
-                cached.setdefault("status", "complete")
-                cached.setdefault("method", "instruction_following")
-                cached.setdefault("judge_mode", "cached_llm")
-                return cached
             # Cache miss on replay mode -> skip real LLM and fall back to heuristics
+            pass
         
         # Live Evaluation (or Cache Miss on Live)
         if self.mode == "live":
@@ -210,7 +262,7 @@ Response:
 
 Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (perfectly followed) as a single float number on the first line.
 """
-            llm_out = get_llm_response(prompt)
+            llm_out = get_llm_response(prompt, model_name=model_name)
             if llm_out:
                 try:
                     match = re.search(r'\d+(\.\d+)?', llm_out)
@@ -252,6 +304,105 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
             "status": "fallback",
             "method": "instruction_following",
             "judge_mode": "heuristic_fallback"
+        }
+
+    def evaluate_semantic_response_quality(
+        self,
+        question: str,
+        conversation_history: str,
+        response: str,
+    ) -> Dict[str, Any]:
+        """
+        Generic semantic judge that scores how well a response addresses the task.
+        Uses only the question, prior conversation, and current response.
+        """
+        model_name = _resolve_model_name(self.model_name)
+        legacy_input = f"{question}|||{conversation_history}|||{response}"
+        input_hash = _build_cache_key(
+            "semantic_response_quality",
+            _CACHE_VERSION,
+            model_name,
+            {
+                "question": question,
+                "conversation_history": conversation_history,
+                "response": response,
+            },
+        )
+        legacy_hash = _legacy_cache_hash(legacy_input)
+
+        cached = self._cache_lookup(input_hash, legacy_hash, "semantic_response_quality")
+        if cached:
+            return cached
+        if self.mode == "replay":
+            return {
+                "score": 0.5,
+                "value": 0.5,
+                "status": "fallback",
+                "method": "semantic_response_quality",
+                "judge_mode": "heuristic_fallback",
+                "evidence": {
+                    "reason": "replay_cache_miss_neutral_fallback",
+                    "question_excerpt": question[:256] if question else "",
+                    "history_excerpt": conversation_history[:256] if conversation_history else "",
+                    "response_excerpt": response[:256] if response else "",
+                },
+            }
+
+        if self.mode == "live":
+            prompt = f"""
+You are grading how well an assistant response addresses a task.
+Use only the question, prior conversation, and current response.
+Do not use any labels or metadata about the ground truth.
+
+Question:
+{question}
+
+Conversation so far:
+{conversation_history}
+
+Current response:
+{response}
+
+Return a single score from 0.0 to 1.0 on the first line.
+Higher means the response better addresses the task.
+"""
+            llm_out = get_llm_response(prompt, model_name=model_name)
+            if llm_out:
+                try:
+                    match = re.search(r"\d+(\.\d+)?", llm_out)
+                    if match:
+                        score = min(1.0, max(0.0, float(match.group(0))))
+                        result = {
+                            "score": score,
+                            "value": score,
+                            "status": "complete",
+                            "method": "semantic_response_quality",
+                            "judge_mode": "llm",
+                            "version": _CACHE_VERSION,
+                            "evidence": {
+                                "reason": "llm_judged_semantic_quality",
+                                "question_excerpt": question[:256] if question else "",
+                                "history_excerpt": conversation_history[:256] if conversation_history else "",
+                                "response_excerpt": response[:256] if response else "",
+                            },
+                        }
+                        self.store.set_cached_result(input_hash, "semantic_response_quality", result)
+                        return result
+                except Exception:
+                    pass
+
+        return {
+            "score": 0.5,
+            "value": 0.5,
+            "status": "fallback",
+            "method": "semantic_response_quality",
+            "judge_mode": "heuristic_fallback",
+            "evidence": {
+                "reason": "neutral_fallback_no_llm_result",
+                "question_excerpt": question[:256] if question else "",
+                "history_excerpt": conversation_history[:256] if conversation_history else "",
+                "response_excerpt": response[:256] if response else "",
+            },
         }
 
     def evaluate_tool_accuracy(self, chosen_tool: str, expected_tool: Optional[str] = None) -> Optional[float]:
@@ -550,21 +701,25 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
             
         evidence_text = "\n---\n".join([doc.get("text", "") for doc in retrieved_docs])
         
-        input_str = f"{response}|||{evidence_text}"
-        input_hash = hashlib.md5(input_str.encode('utf-8')).hexdigest()
+        model_name = _resolve_model_name(self.model_name)
+        legacy_input = f"{response}|||{evidence_text}"
+        input_hash = _build_cache_key(
+            "groundedness",
+            _CACHE_VERSION,
+            model_name,
+            {"response": response, "evidence_text": evidence_text},
+        )
+        legacy_hash = _legacy_cache_hash(legacy_input)
         
-        # Replay Cache Lookup
+        cached = self._cache_lookup(input_hash, legacy_hash, "groundedness")
+        if cached:
+            return {
+                **cached,
+                "details": cached.get("details", {"claims": []})
+            }
         if self.mode == "replay":
-            cached = self.store.get_cached_result(input_hash)
-            if cached:
-                cached.setdefault("status", "complete")
-                cached.setdefault("method", "groundedness")
-                cached.setdefault("judge_mode", "cached_llm")
-                return {
-                    **cached,
-                    "details": cached.get("details", {"claims": []})
-                }
             # Cache miss on replay mode -> skip real LLM and fall back to heuristics
+            pass
             
         # Live Evaluation (or Cache Miss on Live)
         if self.mode == "live":
@@ -573,7 +728,7 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
 Decompose the text below into a JSON list of separate factual claims. Respond ONLY with the JSON array.
 Text: "{response}"
 """
-            llm_out = get_llm_response(prompt)
+            llm_out = get_llm_response(prompt, model_name=model_name)
             if llm_out:
                 try:
                     clean_json = llm_out.strip()

@@ -13,12 +13,22 @@ class trace:
             t.inputs = {"query": "hello"}
             t.outputs = {"response": "hi"}
     """
-    def __init__(self, session_id: str, node_id: str, node_type: str, db_path: str = "agenteval.db", parent_session_id: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        session_id: str,
+        node_id: str,
+        node_type: str,
+        db_path: Optional[str] = None,
+        *,
+        database_url: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ):
         self.session_id = session_id
         self.node_id = node_id
         self.node_type = node_type
-        self.db_path = db_path
-        self.store = TraceStore(db_path=db_path)
+        self.db_path = database_url or db_path or "agenteval.db"
+        self.store = TraceStore(db_path=self.db_path)
         self.inputs = None
         self.outputs = None
         self.parent_node_ids = []
