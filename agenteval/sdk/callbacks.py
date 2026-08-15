@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from agenteval.sdk.storage import TraceStore
+from agenteval.sdk.client import AgentEvalClient
 
 try:
     from langchain_core.callbacks import BaseCallbackHandler
@@ -22,13 +23,17 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
         db_path: Optional[str] = None,
         *,
         database_url: Optional[str] = None,
+        api_url: Optional[str] = None,
         parent_session_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
         self.session_id = session_id
         self.db_path = database_url or db_path or "agenteval.db"
         self.parent_session_id = parent_session_id
-        self.store = TraceStore(db_path=self.db_path)
+        self.api_url = api_url
+        self.api_key = api_key
+        self.store = None if api_url else TraceStore(db_path=self.db_path)
+        self.client = AgentEvalClient(api_url, api_key) if api_url else None
         # Maps active run_id -> active node trace dict
         self.active_runs: Dict[str, Dict[str, Any]] = {}
         # Lists completed nodes to link parent_node_ids
@@ -37,10 +42,10 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
         self.node_attempts: Dict[str, int] = {}
 
         self.user_id = None
-        if api_key:
+        if api_key and self.store is not None:
             self.user_id = self.store.resolve_user_id(api_key)
 
-        if parent_session_id:
+        if parent_session_id and self.store is not None:
             self.store.save_session_link(session_id, parent_session_id, link_reason="Handoff", user_id=self.user_id)
 
     def _resolve_node_type(self, node_name: str) -> str:
@@ -128,7 +133,10 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
                         node_data["tool_args"] = tc.get("args")
             
             # Save the node details
-            self.store.save_trace_node(node_data)
+            if self.client is not None:
+                self.client.submit_trace({**node_data, "parent_session_id": self.parent_session_id})
+            else:
+                self.store.save_trace_node(node_data)
             
             # Update sequence history
             self.completed_nodes.append(node_data["node_id"])

@@ -293,7 +293,7 @@ def test_instruction_following_metric():
     assert res["status"] in {"complete", "fallback"}
     assert 0.0 <= res["score"] <= 1.0
 
-def test_judge_mode_llm_if_key_present(monkeypatch):
+def test_judge_mode_llm_if_key_present(monkeypatch, tmp_path):
     """Asserts that judge_mode is 'llm' when the GEMINI_API_KEY is present in the environment."""
     import agenteval.eval.metrics
     if agenteval.eval.metrics.litellm is None:
@@ -330,7 +330,7 @@ def test_judge_mode_llm_if_key_present(monkeypatch):
         
     monkeypatch.setattr(agenteval.eval.metrics.litellm, "completion", mock_completion)
     
-    engine = EvaluationEngine(mode="live")
+    engine = EvaluationEngine(db_path=str(tmp_path / "judge_mode.db"), mode="live")
     res = engine.evaluate_groundedness(
         "The agent is running.", 
         [{"text": "AgentEval helps teams debug agents."}]

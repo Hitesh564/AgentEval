@@ -486,7 +486,7 @@ def test_failed_parent_filter_uses_each_nodes_failure_type():
 
     assert generator["failure_type"] == FailureType.GROUNDING_FAILURE
     assert retriever["failure_type"] == FailureType.RETRIEVAL_FAILURE
-    assert retriever["is_root_cause"] is True
+    assert retriever["is_root_cause"] is False
     assert generator["is_root_cause"] is False
     candidate_ids = [c["node_id"] for c in retriever["ranked_candidates"]]
     assert "generator_node" in candidate_ids

@@ -1,5 +1,4 @@
 import os
-import os
 import json
 import math
 import re
@@ -52,6 +51,7 @@ def _build_cache_key(
     model_name: str,
     evaluation_input: Any,
     *,
+    user_id: Optional[str] = None,
     system_prompt: Optional[str] = None,
 ) -> str:
     payload = {
@@ -59,6 +59,7 @@ def _build_cache_key(
         "evaluator_version": evaluator_version,
         "metric_name": metric_name,
         "model_name": model_name,
+        "user_id": user_id or "__public__",
         "system_prompt": system_prompt,
     }
     canonical = _stable_json_dumps(payload)
@@ -219,16 +220,23 @@ class EvaluationEngine:
         from agenteval.sdk.storage import TraceStore
         self.store = TraceStore(db_path=db_path)
 
-    def _cache_lookup(self, cache_key: str, legacy_key: Optional[str], metric_name: str) -> Optional[Dict[str, Any]]:
-        legacy_keys = [legacy_key] if legacy_key else None
-        cached = self.store.get_cached_result(cache_key, legacy_keys)
+    def _cache_lookup(
+        self,
+        cache_key: str,
+        legacy_key: Optional[str],
+        metric_name: str,
+        *,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        legacy_keys = [legacy_key] if legacy_key and not user_id else None
+        cached = self.store.get_cached_result(cache_key, user_id=user_id, legacy_input_hashes=legacy_keys)
         if cached:
             cached.setdefault("status", "complete")
             cached.setdefault("method", metric_name)
-            cached.setdefault("judge_mode", "cached_llm")
+            cached["judge_mode"] = "cached_llm"
         return cached
 
-    def evaluate_instruction_following(self, system_prompt: str, response: str) -> Dict[str, Any]:
+    def evaluate_instruction_following(self, system_prompt: str, response: str, *, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         LLM-judge score (0.0 to 1.0) assessing how well the response followed instructions.
         """
@@ -239,11 +247,12 @@ class EvaluationEngine:
             _CACHE_VERSION,
             model_name,
             {"system_prompt": system_prompt, "response": response},
+            user_id=user_id,
             system_prompt=system_prompt,
         )
         legacy_hash = _legacy_cache_hash(legacy_input)
         
-        cached = self._cache_lookup(input_hash, legacy_hash, "instruction_following")
+        cached = self._cache_lookup(input_hash, legacy_hash, "instruction_following", user_id=user_id)
         if cached:
             return cached
         if self.mode == "replay":
@@ -282,7 +291,7 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
                             },
                         }
                         # Save fresh result back to cache
-                        self.store.set_cached_result(input_hash, "instruction_following", result)
+                        self.store.set_cached_result(input_hash, "instruction_following", result, user_id=user_id)
                         return result
                 except Exception:
                     pass
@@ -311,6 +320,8 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
         question: str,
         conversation_history: str,
         response: str,
+        *,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generic semantic judge that scores how well a response addresses the task.
@@ -327,10 +338,11 @@ Provide a score between 0.0 (completely failed / ignored instructions) and 1.0 (
                 "conversation_history": conversation_history,
                 "response": response,
             },
+            user_id=user_id,
         )
         legacy_hash = _legacy_cache_hash(legacy_input)
 
-        cached = self._cache_lookup(input_hash, legacy_hash, "semantic_response_quality")
+        cached = self._cache_lookup(input_hash, legacy_hash, "semantic_response_quality", user_id=user_id)
         if cached:
             return cached
         if self.mode == "replay":
@@ -386,7 +398,7 @@ Higher means the response better addresses the task.
                                 "response_excerpt": response[:256] if response else "",
                             },
                         }
-                        self.store.set_cached_result(input_hash, "semantic_response_quality", result)
+                        self.store.set_cached_result(input_hash, "semantic_response_quality", result, user_id=user_id)
                         return result
                 except Exception:
                     pass
@@ -684,7 +696,13 @@ Higher means the response better addresses the task.
             },
         }
 
-    def evaluate_groundedness(self, response: str, retrieved_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def evaluate_groundedness(
+        self,
+        response: str,
+        retrieved_docs: List[Dict[str, Any]],
+        *,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Decomposes response into individual claims and checks each against evidence.
         Returns supported/total claims ratio.
@@ -708,10 +726,11 @@ Higher means the response better addresses the task.
             _CACHE_VERSION,
             model_name,
             {"response": response, "evidence_text": evidence_text},
+            user_id=user_id,
         )
         legacy_hash = _legacy_cache_hash(legacy_input)
         
-        cached = self._cache_lookup(input_hash, legacy_hash, "groundedness")
+        cached = self._cache_lookup(input_hash, legacy_hash, "groundedness", user_id=user_id)
         if cached:
             return {
                 **cached,
@@ -770,7 +789,7 @@ Is the claim supported by the evidence? Answer YES or NO.
                             "details": {"claims": claims_detail}
                         }
                         # Save fresh result back to cache
-                        self.store.set_cached_result(input_hash, "groundedness", res_dict)
+                        self.store.set_cached_result(input_hash, "groundedness", res_dict, user_id=user_id)
                         return {
                             "score": score,
                             "value": score,

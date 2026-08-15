@@ -1,18 +1,19 @@
 import argparse
 import secrets
 from agenteval.sdk.storage import TraceStore
+from agenteval.sdk.database import resolve_database_url
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a secure API key for AgentEval and store its hash in the database.")
     parser.add_argument("--user-id", required=True, help="Unique string identifier for the user (e.g. 'alice')")
-    parser.add_argument("--db-path", default="agenteval.db", help="Path to the SQLite database file")
+    parser.add_argument("--database-url", default=None, help="Database URL or SQLite path. Defaults to AGENTEVAL_DATABASE_URL when set.")
     args = parser.parse_args()
 
     # Generate a cryptographically secure random hexadecimal key
     api_key = secrets.token_hex(24)
     
-    # Store the user and key hash in the SQLite database
-    store = TraceStore(db_path=args.db_path)
+    database_url = resolve_database_url(args.database_url, allow_sqlite_fallback=True)
+    store = TraceStore(database_url=database_url)
     store.create_user(args.user_id, api_key)
     
     print("=================================================================")

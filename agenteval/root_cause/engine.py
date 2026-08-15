@@ -236,7 +236,8 @@ class RootCauseEngine:
                 evidence["tool_margin"] = tool_res["margin"]
 
             system_prompt = f"Plan task execution for query: {query}"
-            inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
+            user_id = node.get("user_id")
+            inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text, user_id=user_id)
             evidence["instruction_following"] = inst_res.get("score", evidence["instruction_following"])
             if inst_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
                 evidence["judge_mode"] = inst_res["judge_mode"]
@@ -254,7 +255,8 @@ class RootCauseEngine:
             if stripped.startswith("{") or stripped.startswith("["):
                 evidence["json_valid"] = self.eval_engine.evaluate_json_validity(output_text)
 
-            grounded_res = self.eval_engine.evaluate_groundedness(output_text, all_docs)
+            user_id = node.get("user_id")
+            grounded_res = self.eval_engine.evaluate_groundedness(output_text, all_docs, user_id=user_id)
             evidence["groundedness_evidence"] = grounded_res
             if grounded_res.get("score") is not None:
                 evidence["groundedness_ratio"] = grounded_res["score"]
@@ -263,7 +265,7 @@ class RootCauseEngine:
 
             q_val = query or ""
             system_prompt = f"Answer queries correctly. Query: {q_val}"
-            inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text)
+            inst_res = self.eval_engine.evaluate_instruction_following(system_prompt, output_text, user_id=node.get("user_id"))
             evidence["instruction_following"] = inst_res.get("score", evidence["instruction_following"])
             if inst_res.get("judge_mode") in ("llm", "cached_llm", "heuristic_fallback"):
                 evidence["judge_mode"] = inst_res["judge_mode"]
@@ -290,7 +292,7 @@ class RootCauseEngine:
 
             g_ratio = None
             if gen_output and docs:
-                g_res = self.eval_engine.evaluate_groundedness(gen_output, docs)
+                g_res = self.eval_engine.evaluate_groundedness(gen_output, docs, user_id=node.get("user_id"))
                 evidence["groundedness_evidence"] = g_res
                 g_ratio = g_res.get("score")
                 if g_ratio is not None:
@@ -332,6 +334,7 @@ class RootCauseEngine:
                     str(query) if query is not None else "",
                     str(inputs.get("input_prompt") or ""),
                     output_text,
+                    user_id=node.get("user_id"),
                 )
                 evidence["semantic_response_quality_evidence"] = semantic_res
                 has_conversation_context = bool(str(inputs.get("input_prompt") or "").strip())

@@ -2,6 +2,7 @@ import time
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from agenteval.sdk.storage import TraceStore
+from agenteval.sdk.client import AgentEvalClient
 
 class trace:
     """
@@ -21,6 +22,7 @@ class trace:
         db_path: Optional[str] = None,
         *,
         database_url: Optional[str] = None,
+        api_url: Optional[str] = None,
         parent_session_id: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
@@ -28,7 +30,11 @@ class trace:
         self.node_id = node_id
         self.node_type = node_type
         self.db_path = database_url or db_path or "agenteval.db"
-        self.store = TraceStore(db_path=self.db_path)
+        self.parent_session_id = parent_session_id
+        self.api_url = api_url
+        self.api_key = api_key
+        self.store = None if api_url else TraceStore(db_path=self.db_path)
+        self.client = AgentEvalClient(api_url, api_key) if api_url else None
         self.inputs = None
         self.outputs = None
         self.parent_node_ids = []
@@ -41,10 +47,10 @@ class trace:
         self.cost_usd = 0.0
 
         self.user_id = None
-        if api_key:
+        if api_key and self.store is not None:
             self.user_id = self.store.resolve_user_id(api_key)
 
-        if parent_session_id:
+        if parent_session_id and self.store is not None:
             self.store.save_session_link(session_id, parent_session_id, link_reason="Handoff", user_id=self.user_id)
 
     def __enter__(self):
@@ -74,8 +80,12 @@ class trace:
             "tokens_out": self.tokens_out,
             "cost_usd": self.cost_usd,
             "parent_node_ids": self.parent_node_ids,
+            "parent_session_id": self.parent_session_id,
             "user_id": self.user_id
         }
-        self.store.save_trace_node(trace_data)
+        if self.client is not None:
+            self.client.submit_trace(trace_data)
+        else:
+            self.store.save_trace_node(trace_data)
         # Propagate exceptions if any
         return False

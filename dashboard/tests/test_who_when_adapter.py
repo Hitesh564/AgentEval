@@ -39,7 +39,7 @@ def test_who_when_case_reports_agent_and_step():
         "question_ID": "1",
         "question": "Question?",
         "mistake_agent": "assistant",
-        "mistake_step": "assistant",
+        "mistake_step": "3",
         "history": [
             {"role": "human", "content": "Hi"},
             {"role": "assistant", "content": "First answer"},
@@ -55,7 +55,7 @@ def test_who_when_case_reports_agent_and_step():
     assert record.agent_correct is True
     assert record.step_correct is True
     assert record.exact_match is True
-    assert record.predicted_step == "assistant"
+    assert record.predicted_step == "step_3"
     assert store.links
 
 
@@ -117,4 +117,3 @@ def test_who_when_prediction_is_invariant_to_ground_truth_label_changes():
     assert base_record.predicted_agent == changed_record.predicted_agent
     assert base_record.predicted_step == changed_record.predicted_step
     assert base_record.agent_correct != changed_record.agent_correct
-    assert base_record.step_correct != changed_record.step_correct

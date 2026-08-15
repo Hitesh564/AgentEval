@@ -293,7 +293,7 @@ def test_instruction_following_metric():
     assert res["status"] in {"complete", "fallback"}
     assert 0.0 <= res["score"] <= 1.0
 
-def test_judge_mode_llm_if_key_present(monkeypatch):
+def test_judge_mode_llm_if_key_present(monkeypatch, tmp_path):
     """Asserts that judge_mode is 'llm' when the GEMINI_API_KEY is present in the environment."""
     import agenteval.eval.metrics
     if agenteval.eval.metrics.litellm is None:
@@ -330,10 +330,11 @@ def test_judge_mode_llm_if_key_present(monkeypatch):
         
     monkeypatch.setattr(agenteval.eval.metrics.litellm, "completion", mock_completion)
     
-    engine = EvaluationEngine(mode="live")
+    engine = EvaluationEngine(db_path=str(tmp_path / "judge_mode.db"), mode="live")
     res = engine.evaluate_groundedness(
         "The agent is running.", 
-        [{"text": "AgentEval helps teams debug agents."}]
+        [{"text": "AgentEval helps teams debug agents."}],
+        user_id="judge-mode-llm-test",
     )
     assert res["judge_mode"] == "llm"
 
@@ -391,10 +392,10 @@ def test_semantic_response_quality_live_path_caches_score(monkeypatch):
     cached = {}
 
     class CacheStore:
-        def get_cached_result(self, input_hash, legacy_input_hashes=None):
+        def get_cached_result(self, input_hash, user_id=None, legacy_input_hashes=None):
             return cached.get(input_hash)
 
-        def set_cached_result(self, input_hash, metric_name, result):
+        def set_cached_result(self, input_hash, metric_name, result, user_id=None):
             cached[input_hash] = result
             cached[input_hash]["metric_name"] = metric_name
 
@@ -506,7 +507,7 @@ def test_semantic_response_quality_live_uses_cache_before_llm(monkeypatch):
     }
 
     class CacheStore:
-        def get_cached_result(self, input_hash, legacy_input_hashes=None):
+        def get_cached_result(self, input_hash, user_id=None, legacy_input_hashes=None):
             calls.append((input_hash, tuple(legacy_input_hashes or [])))
             if legacy_input_hashes:
                 return cached_result

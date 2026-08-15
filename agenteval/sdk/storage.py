@@ -6,8 +6,11 @@ from datetime import datetime
 from sqlalchemy import (
     create_engine, select, insert, update, delete, or_, and_, func
 )
+from sqlalchemy import inspect
 from agenteval.sdk.database import build_engine_options, database_backend_name, resolve_database_url
 from agenteval.sdk.schema import metadata, users, traces, eval_cache, session_links
+
+_PUBLIC_CACHE_USER_ID = "__public__"
 
 class TraceStore:
     def __init__(
@@ -36,10 +39,24 @@ class TraceStore:
 
         if init_schema:
             self.init_db()
+        self.eval_cache_has_user_id = self._table_has_column("eval_cache", "user_id")
 
     def init_db(self):
         """Initializes database tables using SQLAlchemy metadata."""
         self.metadata.create_all(self.engine)
+
+    def _normalize_cache_user_id(self, user_id: Optional[str]) -> str:
+        normalized = (user_id or "").strip()
+        return normalized or _PUBLIC_CACHE_USER_ID
+
+    def _table_has_column(self, table_name: str, column_name: str) -> bool:
+        if self.backend_name != "sqlite":
+            return True
+        try:
+            inspector = inspect(self.engine)
+            return any(column.get("name") == column_name for column in inspector.get_columns(table_name))
+        except Exception:
+            return False
 
     def resolve_user_id(self, api_key: str) -> Optional[str]:
         """Resolves user_id from plaintext API key hash lookup."""
@@ -72,35 +89,51 @@ class TraceStore:
                 )
                 conn.execute(stmt_insert)
 
-    def get_cached_result(self, input_hash: str, legacy_input_hashes: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    def get_cached_result(
+        self,
+        input_hash: str,
+        user_id: Optional[str] = None,
+        legacy_input_hashes: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Retrieves a cached evaluation result if it exists.
 
         The primary lookup uses the canonical SHA-256 cache key. Optional legacy
         hashes let us read pre-hardened MD5-backed cache rows without rewriting
         stored data.
         """
+        cache_user_id = self._normalize_cache_user_id(user_id)
         candidate_hashes = [input_hash]
-        if legacy_input_hashes:
+        if legacy_input_hashes and cache_user_id == _PUBLIC_CACHE_USER_ID:
             for legacy_hash in legacy_input_hashes:
                 if legacy_hash and legacy_hash not in candidate_hashes:
                     candidate_hashes.append(legacy_hash)
 
         with self.engine.connect() as conn:
             for candidate_hash in candidate_hashes:
-                row = conn.execute(
-                    select(self.eval_cache.c.result_json).where(self.eval_cache.c.input_hash == candidate_hash)
-                ).fetchone()
+                query = select(self.eval_cache.c.result_json).where(self.eval_cache.c.input_hash == candidate_hash)
+                if self.eval_cache_has_user_id:
+                    query = query.where(self.eval_cache.c.user_id == cache_user_id)
+                row = conn.execute(query).fetchone()
                 if row:
                     return json.loads(row[0])
             return None
 
-    def set_cached_result(self, input_hash: str, metric_name: str, result: Dict[str, Any]):
+    def set_cached_result(
+        self,
+        input_hash: str,
+        metric_name: str,
+        result: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ):
         """Stores or overwrites an evaluation result in the cache database."""
         now_str = datetime.now().isoformat()
         result_json = json.dumps(result)
+        cache_user_id = self._normalize_cache_user_id(user_id)
         
         with self.engine.begin() as conn:
             stmt_select = select(self.eval_cache.c.input_hash).where(self.eval_cache.c.input_hash == input_hash)
+            if self.eval_cache_has_user_id:
+                stmt_select = stmt_select.where(self.eval_cache.c.user_id == cache_user_id)
             existing = conn.execute(stmt_select).fetchone()
             if existing:
                 stmt_update = (
@@ -108,11 +141,19 @@ class TraceStore:
                     .where(self.eval_cache.c.input_hash == input_hash)
                     .values(metric_name=metric_name, result_json=result_json, timestamp=now_str)
                 )
+                if self.eval_cache_has_user_id:
+                    stmt_update = stmt_update.where(self.eval_cache.c.user_id == cache_user_id)
                 conn.execute(stmt_update)
             else:
-                stmt_insert = insert(self.eval_cache).values(
-                    input_hash=input_hash, metric_name=metric_name, result_json=result_json, timestamp=now_str
-                )
+                insert_values = {
+                    "input_hash": input_hash,
+                    "metric_name": metric_name,
+                    "result_json": result_json,
+                    "timestamp": now_str,
+                }
+                if self.eval_cache_has_user_id:
+                    insert_values["user_id"] = cache_user_id
+                stmt_insert = insert(self.eval_cache).values(**insert_values)
                 conn.execute(stmt_insert)
 
     def save_trace_node(self, trace_node: Dict[str, Any]):
@@ -149,6 +190,8 @@ class TraceStore:
             "attempt_number": attempt_number,
             "user_id": trace_node.get("user_id"),
         }
+        parent_session_id = trace_node.get("parent_session_id")
+        trace_user_id = trace_node.get("user_id")
 
         with self.engine.begin() as conn:
             stmt_select = select(self.traces.c.id).where(
@@ -169,6 +212,13 @@ class TraceStore:
             else:
                 stmt_insert = insert(self.traces).values(**values_dict)
                 conn.execute(stmt_insert)
+        if parent_session_id:
+            self.save_session_link(
+                session_id,
+                parent_session_id,
+                link_reason="Handoff",
+                user_id=trace_user_id,
+            )
 
     def get_session_traces(self, session_id: str, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieves all trace nodes for a given session."""
@@ -293,9 +343,12 @@ class TraceStore:
 
     def clear_user_data(self, user_id: str):
         """Clears all traces and links for a user."""
+        cache_user_id = self._normalize_cache_user_id(user_id)
         with self.engine.begin() as conn:
             conn.execute(delete(self.traces).where(self.traces.c.user_id == user_id))
             conn.execute(delete(self.session_links).where(self.session_links.c.user_id == user_id))
+            if self.eval_cache_has_user_id:
+                conn.execute(delete(self.eval_cache).where(self.eval_cache.c.user_id == cache_user_id))
 
     def update_branching_topology(self, session_id: str):
         """Updates parent_node_ids and merges retrieved docs for parallel branching research agent nodes."""

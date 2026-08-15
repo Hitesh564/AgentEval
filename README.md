@@ -1,174 +1,209 @@
 # AgentEval
 
-AgentEval is an evaluation and failure-attribution system for AI agent pipelines. It instruments agent traces, scores node-level behavior, propagates failures through the execution graph, and surfaces evidence for where a workflow broke and why that failure likely spread.
+AgentEval is an evaluation and failure-attribution platform for AI agent workflows. It captures traces, scores node-level behavior, propagates failures through the execution graph, and surfaces evidence for where a workflow broke and why that failure spread.
 
-The project is designed as a practical observability layer for agent systems rather than a causal-reasoning research prototype. It supports local development with SQLite, production deployments with PostgreSQL or Supabase, and a dashboard for inspecting traces, regressions, and root-cause evidence.
+It is designed to work in two modes:
 
----
+- Local development with SQLite
+- Hosted deployment with PostgreSQL or Supabase behind a FastAPI backend
 
-## What It Does
+## Overview
+
+```mermaid
+flowchart LR
+    A["Agent / LangGraph workflow"] --> B["AgentEval SDK"]
+    B --> C["Local mode: SQLite + local dashboard"]
+    B --> D["Hosted mode: HTTPS ingestion API"]
+    D --> E["FastAPI backend"]
+    E --> F["PostgreSQL / Supabase"]
+    F --> G["Dashboard"]
+```
+
+In hosted mode, the client never needs direct database credentials. The backend authenticates API keys, assigns the user identity, and writes traces server-side.
+
+## What AgentEval Does
 
 - Captures agent traces across single-agent and multi-agent workflows
-- Scores node behavior using a small set of measurable health signals
+- Scores node behavior with measurable health signals
 - Propagates failure evidence across the execution graph
 - Ranks likely root-cause nodes with supporting evidence
 - Stores traces, cache results, and session links in SQL-backed storage
-- Exposes a dashboard for reviewing sessions and benchmark results
-
----
-
-## Core Architecture
-
-```text
-Client / Agent SDK
-    -> Tracer and callbacks
-    -> SQL storage layer
-    -> Evaluation engine
-    -> Root-cause engine
-    -> Recommendation engine
-    -> Dashboard API
-    -> React dashboard
-```
-
-### Main Components
-
-- `agenteval/sdk/`
-  - Tracing helpers, SQL storage, schema, and database configuration
-- `agenteval/eval/`
-  - Metric evaluation, confidence calibration, and health scoring
-- `agenteval/root_cause/`
-  - Failure propagation and root-cause ranking
-- `agenteval/recommend/`
-  - Action-oriented recommendations from detected failures
-- `agenteval/benchmark/`
-  - Benchmark runner, metrics, and markdown report generation
-- `agenteval/adapters/`
-  - Dataset adapters such as Who&When
-- `agenteval/server/`
-  - FastAPI backend for the dashboard
-- `dashboard/`
-  - React frontend for trace and benchmark review
-
----
-
-## Evaluation Model
-
-AgentEval currently focuses on measurable signals that are easy to audit:
-
-- Instruction following
-- Retrieval and groundedness evidence
-- Tool selection and tool-argument quality
-- JSON / schema validity
-- Latency
-- Cost and token usage
-- Semantic response quality
-
-The root-cause engine uses these signals to compute node health, adjust health through graph dependencies, and rank candidate failure origins. The system also carries deterministic node-health evidence so the final attribution can be inspected without hiding the underlying measurements.
-
----
+- Serves a dashboard for sessions, trace detail, benchmark comparisons, and causal chains
 
 ## Repository Layout
 
 ```text
-AgentEval/
-|-- agenteval/          # Core Python package
-|   |-- sdk/            # Storage, tracing, schema, and DB config
-|   |-- eval/           # Metric evaluators and calibration
-|   |-- root_cause/     # Failure propagation and attribution
-|   |-- recommend/      # Recovery and remediation suggestions
-|   |-- benchmark/      # Benchmark CLI and report generation
-|   |-- adapters/       # Dataset adapters
-|   `-- server/         # FastAPI backend
-|-- dashboard/          # React dashboard
-|-- examples/           # Demo pipelines and fixtures
-|-- scripts/            # Utility scripts such as API key generation
-|-- tests/              # Pytest regression suite
-|-- artifacts/          # Saved benchmark and validation outputs
-|-- alembic/            # Database migrations
-`-- .env.example        # Environment template
+agenteval/
+|-- sdk/         # Storage, tracing, hosted client, schema, DB config
+|-- eval/        # Metric evaluation, caching, and health scoring
+|-- root_cause/  # Failure propagation and attribution
+|-- recommend/   # Remediation suggestions
+|-- benchmark/   # Benchmark CLI and report generation
+|-- adapters/    # Dataset adapters such as Who&When
+`-- server/      # FastAPI backend
 ```
 
----
+## Installation
 
-## Quick Start
-
-### 1. Install Dependencies
+### 1. Install dependencies
 
 ```powershell
 pip install -r requirements.txt
 pip install -e .
 ```
 
-### 2. Configure Environment
+### 2. Configure environment
 
-Copy `.env.example` to `.env` and set the required values:
+Copy the template and set your values:
 
 ```powershell
 copy .env.example .env
 ```
 
-Recommended environment variables:
+Important variables:
 
 - `AGENTEVAL_DATABASE_URL`
+- `AGENTEVAL_CORS_ORIGINS`
+- `AGENTEVAL_API_URL`
+- `AGENTEVAL_API_KEY`
+- `AGENTEVAL_ADMIN_BOOTSTRAP_KEY`
 - `GEMINI_API_KEY` or `OPENAI_API_KEY`
 - `AGENTEVAL_MODEL`
 - `AGENTEVAL_MAX_COST_USD_PER_RUN`
 - `AGENTEVAL_MAX_TOKENS_PER_CALL`
 
-### 3. Set Up the Database
+## Database
 
-AgentEval uses SQLAlchemy with SQLite for local development and PostgreSQL for production.
+AgentEval keeps the storage model simple:
 
-- Local default: `sqlite:///./agenteval.db`
-- Supabase / PostgreSQL: `postgresql+psycopg2://...`
+- Local development: SQLite
+- Production: PostgreSQL or Supabase
+- ORM: SQLAlchemy
+- Migrations: Alembic
 
-Initialize the schema with Alembic:
+### Local development
 
 ```powershell
+AGENTEVAL_DATABASE_URL=sqlite:///./agenteval.db
 alembic upgrade head
 ```
 
-For a fresh local setup, SQLite works out of the box. For production, always set `AGENTEVAL_DATABASE_URL` before starting the app.
-
-### 4. Generate a Dashboard API Key
-
-Create a user key for dashboard access:
+### Production
 
 ```powershell
-python scripts/generate_api_key.py --user-id alice --db-path agenteval.db
+AGENTEVAL_DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@HOST:5432/DATABASE
+alembic upgrade head
 ```
 
-The script prints the plaintext API key once. Store it securely and paste it into the dashboard when prompted.
+If you are using an older `postgres://` URL, the application normalizes it internally to PostgreSQL.
 
-### 5. Run a Pipeline Demo
+## API Keys
 
-Single-agent example:
+AgentEval uses hashed API keys for authenticated ingestion.
+
+### Create a key locally
+
+```powershell
+python scripts/generate_api_key.py --user-id alice --database-url sqlite:///./agenteval.db
+```
+
+### Create a key against PostgreSQL / Supabase
+
+```powershell
+python scripts/generate_api_key.py --user-id alice --database-url postgresql+psycopg2://USER:PASSWORD@HOST:5432/DATABASE
+```
+
+The plaintext key is shown once and only the SHA-256 hash is stored in the database.
+
+### Hosted bootstrap
+
+The hosted backend also exposes a bootstrap endpoint for creating API keys against the configured production database. The bootstrap token is controlled by `AGENTEVAL_ADMIN_BOOTSTRAP_KEY`.
+
+## SDK Usage
+
+### Local tracing
+
+```python
+from agenteval import AgentEvalCallbackHandler
+
+handler = AgentEvalCallbackHandler(
+    session_id="session_123",
+    db_path="sqlite:///./agenteval.db",
+)
+```
+
+### Hosted tracing
+
+```python
+from agenteval import AgentEvalCallbackHandler
+
+handler = AgentEvalCallbackHandler(
+    session_id="session_123",
+    api_url="https://your-agent-eval-api.example.com",
+    api_key="your-agent-eval-api-key",
+)
+```
+
+### Hosted HTTP client
+
+```python
+from agenteval import AgentEvalClient
+
+client = AgentEvalClient(
+    api_url="https://your-agent-eval-api.example.com",
+    api_key="your-agent-eval-api-key",
+)
+```
+
+The client sends completed trace nodes to `POST /api/v1/traces` and can also batch nodes through `POST /api/v1/traces/batch`.
+
+## Example Workflow
+
+### Run a local pipeline
 
 ```powershell
 python examples/simple_rag_agent.py --calibration
 ```
 
-Multi-agent example:
+### Run the hosted LangGraph example
 
 ```powershell
-python examples/multi_agent_pipeline.py --calibration
+python examples/langgraph_hosted_example.py
 ```
 
-Who&When adapter:
+### Evaluate the Who&When adapter
 
 ```powershell
-python agenteval/adapters/who_when_adapter.py --cases 15 --mode replay
+python -m agenteval.adapters.who_when_adapter --cases 15 --mode replay
 ```
 
-### 6. Start the Backend
+## Backend Server
+
+Start the backend locally:
 
 ```powershell
 python -m uvicorn agenteval.server.main:app --port 8000
 ```
 
-For deployment on a platform such as Railway or Render, set `AGENTEVAL_DATABASE_URL`, run `alembic upgrade head`, and expose the app on the platform port.
+For Railway or a similar platform:
 
-### 7. Start the Dashboard
+```powershell
+alembic upgrade head
+uvicorn agenteval.server.main:app --host 0.0.0.0 --port $PORT
+```
+
+Production environment variables should include:
+
+- `AGENTEVAL_DATABASE_URL`
+- `AGENTEVAL_CORS_ORIGINS`
+- `AGENTEVAL_MODEL`
+- `GEMINI_API_KEY` or `OPENAI_API_KEY`
+- `AGENTEVAL_API_URL`
+- `AGENTEVAL_ADMIN_BOOTSTRAP_KEY`
+- `AGENTEVAL_MAX_COST_USD_PER_RUN`
+- `AGENTEVAL_MAX_TOKENS_PER_CALL`
+
+## Dashboard
 
 ```powershell
 cd dashboard
@@ -176,92 +211,66 @@ npm install
 npm run dev -- --port 5173
 ```
 
-Open `http://localhost:5173` and sign in with the generated API key.
+For deployment, set the frontend API base URL with `VITE_API_BASE_URL`. Do not hardcode localhost into production builds.
 
----
+Example:
 
-## Benchmarking
-
-Run the benchmark CLI against stored traces and fixtures:
-
-```powershell
-agenteval benchmark --fixtures examples/fixtures/test_cases.yaml --output reports/benchmark_report.md
+```text
+VITE_API_BASE_URL=https://your-agent-eval-api.example.com
 ```
 
-The benchmark report includes:
+## CORS
 
-- Accuracy
-- Macro-F1
-- Balanced accuracy
-- Bootstrap confidence intervals
-- Ablation comparisons
-- Calibration summaries
+Production CORS is origin-based and driven by `AGENTEVAL_CORS_ORIGINS`.
 
----
+Example:
 
-## Validated Results
+```text
+AGENTEVAL_CORS_ORIGINS=https://your-dashboard.vercel.app
+```
 
-The repository currently includes validated artifacts from the local workspace:
+For local development, the template includes:
 
-- **Internal benchmark** on `examples/fixtures/test_cases.yaml`
-  - `73.3%` accuracy
-  - `69.8%` macro-F1
-  - `76.2%` balanced accuracy
-  - bootstrap confidence intervals included in the saved report
+- `http://localhost:5173`
+- `http://127.0.0.1:5173`
 
-- **Audited 15-case Who&When subset**
-  - `60.0%` agent-level accuracy on the 15-case Who&When evaluation
-  - `6.7%` step accuracy
-  - `6.7%` exact match
-  - `0.402` macro-F1
-  - `0.422` balanced accuracy
-  - `60.0%` top-k agent accuracy
+## Validation
 
-- **Full official Who&When validation**
-  - `184` total cases
-  - `40.8%` agent accuracy
-  - `14.7%` step accuracy
-  - `14.7%` exact match
-  - `0.353` macro-F1
-  - `0.351` balanced accuracy
-  - `40.8%` top-k agent accuracy
+Current benchmark snapshots captured in this repository:
 
-- **Current test status**
-  - `68 passed, 2 skipped`
+### Internal benchmark
 
-Saved reports and artifacts live under `artifacts/` and `reports/`.
+- Accuracy: `73.3%`
+- Macro-F1: `69.8%`
+- Balanced accuracy: `76.2%`
 
----
+### Full official Who&When
 
-## Known Limits
+- Agent accuracy: `40.8%`
+- Step accuracy: `14.7%`
+- Exact match: `14.7%`
+- Macro-F1: `0.353`
+- Balanced accuracy: `0.351`
+- Top-k accuracy: `40.8%`
 
-AgentEval is intentionally practical, but it still has a few scope boundaries:
+## Security Notes
 
-- Root-cause attribution is evidence-based ranking, not intervention-based causal inference
-- The multi-agent graph model is strongest when the trace structure is explicit and well-formed
-- Recommendations are session-local and derived from observed node failures
-- Confidence calibration is useful for ranking support, but it is not a guarantee of correctness
-- External benchmarks can drift from the internal validation set, so results should be interpreted in context
+- Database credentials stay server-side
+- Clients authenticate with API keys
+- API keys are stored hashed, not in plaintext
+- Production CORS is restricted to configured origins
+- `.env` files and local databases are ignored by git
+- `.env.example` contains placeholders only
 
----
+## Limitations
 
-## Notes for Production
+AgentEval is intentionally conservative:
 
-- Use PostgreSQL or Supabase for deployed environments
-- Keep `AGENTEVAL_DATABASE_URL` set in production
-- Run `alembic upgrade head` before deploying a new database
-- Keep the dashboard API key separate from LLM provider keys
-- Respect the cost guards if live LLM evaluation is enabled
+- It depends on the quality of the trace that the agent emits
+- Root-cause attribution is evidence-based, not a guarantee of ground truth
+- Offline benchmark performance can differ from real-world workflows
+- Hosted deployments still need correct environment variables and database migrations
 
----
+## License
 
-## Files Worth Checking
-
-- `agenteval/sdk/database.py`
-- `agenteval/sdk/storage.py`
-- `agenteval/eval/metrics.py`
-- `agenteval/root_cause/engine.py`
-- `agenteval/benchmark/cli.py`
-- `agenteval/adapters/who_when_adapter.py`
-- `tests/`
-
+See [`LICENSE`](LICENSE).

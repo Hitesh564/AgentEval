@@ -12,6 +12,35 @@ dist
 dist-ssr
 *.local
 
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Databases and caches
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+aienv/
+venv/
+.venv/
+
+# Build artifacts
+build/
+*.egg-info/
+agenteval.egg-info/
+dist/
+
+# Dependencies cache
+.codex_deps/
+
+# Temp files
+.tmp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,9 +1,10 @@
+import secrets
 import time
 import os
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 from agenteval.sdk.storage import TraceStore
@@ -19,11 +20,19 @@ app = FastAPI(
     description="Backend server supporting AgentEval's diagnostic dashboard, powered by SQLAlchemy-backed traces."
 )
 
-# Enable CORS for frontend dashboard (port 5173 / default localhost)
+def _parse_cors_origins(value: Optional[str]) -> List[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return ["http://localhost:5173", "http://127.0.0.1:5173"]
+    origins = [origin.strip() for origin in raw.split(",")]
+    return [origin for origin in origins if origin]
+
+
+_cors_origins = _parse_cors_origins(os.environ.get("AGENTEVAL_CORS_ORIGINS"))
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -53,6 +62,49 @@ class SessionSummary(BaseModel):
     passed: bool
     failure_tag: Optional[str] = None
     timestamp: str
+
+
+class TraceNodeIn(BaseModel):
+    session_id: str
+    node_id: str
+    node_type: str
+    timestamp_start: str
+    timestamp_end: str
+    inputs: Optional[Any] = None
+    outputs: Optional[Any] = None
+    tool_name: Optional[str] = None
+    tool_args: Optional[Any] = None
+    tool_result: Optional[Any] = None
+    retrieved_docs: Optional[Any] = None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    parent_node_ids: List[str] = Field(default_factory=list)
+    attempt_number: int = 1
+    parent_session_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+    @field_validator("parent_node_ids", mode="before")
+    @classmethod
+    def _normalize_parent_node_ids(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        raise ValueError("parent_node_ids must be a list")
+
+
+class TraceBatchIn(BaseModel):
+    traces: List[TraceNodeIn]
+
+
+class ApiKeyCreateRequest(BaseModel):
+    user_id: str
+
+
+class ApiKeyCreateResponse(BaseModel):
+    user_id: str
+    api_key: str
 
 # In-memory response cache for expensive aggregate endpoints
 RESPONSE_CACHE: Dict[str, Dict[str, Any]] = {
@@ -91,6 +143,48 @@ def health_check() -> Dict[str, Any]:
         "database_backend": store.backend_name,
         "database_configured": bool(os.environ.get("AGENTEVAL_DATABASE_URL")),
     }
+
+
+def _ingest_trace_payload(payload: TraceNodeIn, user_id: str) -> Dict[str, Any]:
+    if payload.user_id is not None and payload.user_id != user_id:
+        raise HTTPException(status_code=400, detail="Payload user_id does not match authenticated user")
+
+    trace_node = payload.model_dump()
+    trace_node["user_id"] = user_id
+    store.save_trace_node(trace_node)
+    return {
+        "status": "accepted",
+        "session_id": payload.session_id,
+        "node_id": payload.node_id,
+        "user_id": user_id,
+    }
+
+
+@app.post("/api/v1/traces")
+def ingest_trace(payload: TraceNodeIn, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    """Ingests a single completed trace node for the authenticated user."""
+    return _ingest_trace_payload(payload, user_id)
+
+
+@app.post("/api/v1/traces/batch")
+def ingest_trace_batch(payload: TraceBatchIn, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    """Ingests a batch of completed trace nodes for the authenticated user."""
+    accepted = [_ingest_trace_payload(trace_node, user_id) for trace_node in payload.traces]
+    return {"status": "accepted", "count": len(accepted), "traces": accepted}
+
+
+@app.post("/api/v1/admin/api-keys", response_model=ApiKeyCreateResponse)
+def create_api_key(payload: ApiKeyCreateRequest, x_admin_key: Optional[str] = Header(None)) -> ApiKeyCreateResponse:
+    """Creates a new API key using a bootstrap admin token."""
+    bootstrap_key = os.environ.get("AGENTEVAL_ADMIN_BOOTSTRAP_KEY")
+    if not bootstrap_key:
+        raise HTTPException(status_code=503, detail="Admin bootstrap key is not configured")
+    if x_admin_key != bootstrap_key:
+        raise HTTPException(status_code=401, detail="Invalid admin bootstrap key")
+
+    api_key = secrets.token_urlsafe(32)
+    store.create_user(payload.user_id, api_key)
+    return ApiKeyCreateResponse(user_id=payload.user_id, api_key=api_key)
 
 @app.get("/api/sessions", response_model=List[SessionSummary])
 def list_sessions(user_id: str = Depends(get_current_user_id)) -> List[SessionSummary]:

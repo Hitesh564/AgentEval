@@ -50,6 +50,7 @@ eval_cache = Table(
     "eval_cache",
     metadata,
     Column("input_hash", String, primary_key=True),
+    Column("user_id", String, nullable=False),
     Column("metric_name", String, nullable=False),
     Column("result_json", Text, nullable=False),
     Column("timestamp", String, nullable=False),

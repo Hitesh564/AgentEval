@@ -1,4 +1,5 @@
 import os
+import importlib
 import sqlite3
 import pytest
 from fastapi.testclient import TestClient
@@ -6,17 +7,19 @@ from fastapi.testclient import TestClient
 from agenteval.sdk.storage import TraceStore
 from agenteval.sdk.tracer import trace
 from agenteval.root_cause.engine import RootCauseEngine
-from agenteval.server.main import app
+import agenteval.server.main as main_mod
 
 TEST_DB = "test_multi_user_isolation.db"
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(tmp_path):
     # Clean database before and after test
-    if os.path.exists(TEST_DB):
-        os.remove(TEST_DB)
+    test_db = str(tmp_path / "multi_user_isolation.db")
+    globals()["TEST_DB"] = test_db
+    if os.path.exists(test_db):
+        os.remove(test_db)
         
-    store = TraceStore(db_path=TEST_DB)
+    store = TraceStore(db_path=test_db)
     store.clear_user_data("alice")
     store.clear_user_data("bob")
     
@@ -24,15 +27,16 @@ def setup_db():
     store.create_user("alice", "alice_secret_key_123")
     store.create_user("bob", "bob_secret_key_456")
     
-    # Temporarily override main.py database config
-    import agenteval.server.main as main_mod
+    # Reload the server module so this test stays isolated from other suites.
+    global main_mod
+    main_mod = importlib.reload(main_mod)
     orig_db = main_mod.database_url
     orig_store = main_mod.store
     orig_rc_engine = main_mod.rc_engine
     
-    main_mod.database_url = TEST_DB
+    main_mod.database_url = test_db
     main_mod.store = store
-    main_mod.rc_engine = RootCauseEngine(db_path=TEST_DB)
+    main_mod.rc_engine = RootCauseEngine(db_path=test_db)
     
     yield
     
@@ -43,8 +47,8 @@ def setup_db():
     main_mod.database_url = orig_db
     main_mod.store = orig_store
     main_mod.rc_engine = orig_rc_engine
-    if os.path.exists(TEST_DB):
-        os.remove(TEST_DB)
+    if os.path.exists(test_db):
+        os.remove(test_db)
 
 def test_multi_user_data_isolation():
     # 1. Write traces for Alice
@@ -57,7 +61,7 @@ def test_multi_user_data_isolation():
         t.inputs = {"q": "Bob Query"}
         t.outputs = {"response": "Bob Response"}
 
-    client = TestClient(app)
+    client = TestClient(main_mod.app)
     
     # 2. Test unauthenticated request
     r = client.get("/api/sessions")
