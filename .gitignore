@@ -1,41 +1,24 @@
-# Virtual Environment
-aienv/
-venv/
-ENV/
-env/
-
-# Python bytecode & cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Local databases & logs
-*.db
-*.db-journal
+# Logs
+logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# React / Node Dashboard
-dashboard/node_modules/
-dashboard/dist/
-dashboard/build/
-.eslintcache
+node_modules
+dist
+dist-ssr
+*.local
 
-# Python packaging & distribution
-build/
-dist/
-*.egg-info/
-.eggs/
-
-# IDEs & System files
-.vscode/
-.idea/
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-Thumbs.db
-
-# Sensitive local environments
-.env
-.env.local
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
