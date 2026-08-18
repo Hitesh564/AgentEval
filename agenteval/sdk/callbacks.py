@@ -45,8 +45,14 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
         if api_key and self.store is not None:
             self.user_id = self.store.resolve_user_id(api_key)
 
-        if parent_session_id and self.store is not None:
-            self.store.save_session_link(session_id, parent_session_id, link_reason="Handoff", user_id=self.user_id)
+        # Initialize non-blocking profiler
+        self.profiler = None
+        if self.store is not None:
+            try:
+                from agenteval.profiling.profiler import WorkflowProfiler
+                self.profiler = WorkflowProfiler(store=self.store, db_path=self.db_path)
+            except Exception:
+                self.profiler = None
 
     def _resolve_node_type(self, node_name: str) -> str:
         """Resolves node names to taxonomy types."""
@@ -105,7 +111,9 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
                 "retrieved_docs": None,
                 "tokens_in": 0,
                 "tokens_out": 0,
-                "cost_usd": 0.0
+                "cost_usd": 0.0,
+                "profile_id": None,
+                "profile_version": None,
             }
 
     def on_chain_end(self, outputs: Dict[str, Any], **kwargs: Any) -> Any:
@@ -131,12 +139,26 @@ class AgentEvalCallbackHandler(BaseCallbackHandler):
                         tc = outputs["tool_calls"][0]
                         node_data["tool_name"] = tc.get("name")
                         node_data["tool_args"] = tc.get("args")
-            
+
+            # Check if a cached profile exists to attach profile_id
+            if self.profiler and self.store:
+                cached_prof = self.profiler.cache.get_by_node(self.session_id, node_data["node_id"])
+                if cached_prof:
+                    node_data["profile_id"] = cached_prof.profile_id
+                    node_data["profile_version"] = cached_prof.profile_version
+
             # Save the node details
             if self.client is not None:
                 self.client.submit_trace({**node_data, "parent_session_id": self.parent_session_id})
             else:
                 self.store.save_trace_node(node_data)
+
+            # Trigger non-blocking asynchronous profiling in background
+            if self.profiler:
+                try:
+                    self.profiler.profile_workflow_async(self.session_id, [node_data])
+                except Exception:
+                    pass
             
             # Update sequence history
             self.completed_nodes.append(node_data["node_id"])

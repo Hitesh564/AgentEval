@@ -43,7 +43,32 @@ traces = Table(
     Column("parent_node_ids", Text, nullable=True),
     Column("attempt_number", Integer, default=1),
     Column("user_id", String, nullable=True),
+    Column("profile_id", String, nullable=True),
+    Column("profile_version", String, nullable=True),
     UniqueConstraint("session_id", "node_id", "attempt_number", name="uq_session_node_attempt"),
+)
+
+node_profiles = Table(
+    "node_profiles",
+    metadata,
+    Column("profile_id", String, primary_key=True),
+    Column("session_id", String, nullable=True),
+    Column("node_id", String, nullable=False),
+    Column("profile_signature", String, nullable=False),
+    Column("profile_version", String, nullable=False),
+    Column("inferred_role", String, nullable=False),
+    Column("purpose", Text, nullable=True),
+    Column("responsibilities", Text, nullable=True),
+    Column("inputs_summary", Text, nullable=True),
+    Column("outputs_summary", Text, nullable=True),
+    Column("tools_used", Text, nullable=True),
+    Column("evaluation_dimensions", Text, nullable=True),
+    Column("executable_metrics", Text, nullable=True),
+    Column("metric_weights", Text, nullable=True),
+    Column("confidence", Float, default=1.0),
+    Column("created_at", String, nullable=False),
+    Column("updated_at", String, nullable=False),
+    Column("user_id", String, nullable=True),
 )
 
 eval_cache = Table(
@@ -66,3 +91,4 @@ session_links = Table(
     Column("user_id", String, nullable=True),
     PrimaryKeyConstraint("child_session_id", "parent_session_id"),
 )
+

@@ -67,9 +67,10 @@ class RootCauseEngine:
                 return float(self.threshold_calibration.threshold)
         return config.threshold_policy.get("overall", 0.70)
 
-    def get_failure_threshold(self, node_type: str) -> float:
-        """Returns the active failure threshold for a node type."""
-        return self._calibrated_failure_threshold(node_type, get_health_config(node_type))
+    def get_failure_threshold(self, node_type: str, profile: Optional[Any] = None) -> float:
+        """Returns the active failure threshold for a node type or profile."""
+        config = get_health_config(node_type, profile=profile)
+        return self._calibrated_failure_threshold(node_type, config)
 
     def _semantic_gating_enabled(self) -> bool:
         value = os.environ.get("AGENTEVAL_SEMANTIC_GATING", "").strip().lower()

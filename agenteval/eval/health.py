@@ -8,6 +8,40 @@ class HealthConfig:
     metric_weights: Dict[str, float]
     threshold_policy: Dict[str, float] = field(default_factory=dict)
 
+    @classmethod
+    def from_profile(cls, profile: Any) -> "HealthConfig":
+        """Constructs a dynamic HealthConfig from a NodeProfile object or dictionary."""
+        if hasattr(profile, "to_dict"):
+            pdict = profile.to_dict()
+        elif isinstance(profile, dict):
+            pdict = profile
+        else:
+            return DEFAULT_HEALTH_CONFIGS["custom"]
+
+        role = str(pdict.get("inferred_role") or pdict.get("node_id") or "custom")
+        raw_weights = pdict.get("metric_weights") or {}
+        exec_metrics = pdict.get("executable_metrics") or []
+
+        weights: Dict[str, float] = {}
+        if isinstance(raw_weights, dict) and raw_weights:
+            for k, v in raw_weights.items():
+                try:
+                    weights[k] = max(0.0, min(1.0, float(v)))
+                except (ValueError, TypeError):
+                    pass
+
+        if not weights and exec_metrics:
+            w_equal = round(1.0 / len(exec_metrics), 2)
+            weights = {m: w_equal for m in exec_metrics}
+
+        if not weights:
+            weights = {"instruction_following": 0.4, "semantic_response_quality": 0.1, "latency": 0.3}
+
+        thresholds = {m: 0.70 for m in weights}
+        thresholds["overall"] = 0.70
+
+        return cls(node_type=role, metric_weights=weights, threshold_policy=thresholds)
+
 
 DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
     "retriever": HealthConfig(
@@ -95,7 +129,10 @@ DEFAULT_HEALTH_CONFIGS: Dict[str, HealthConfig] = {
 }
 
 
-def get_health_config(node_type: str) -> HealthConfig:
+def get_health_config(node_type: str, profile: Optional[Any] = None) -> HealthConfig:
+    """Returns HealthConfig from profile if present, otherwise falls back to node_type lookup."""
+    if profile is not None:
+        return HealthConfig.from_profile(profile)
     return DEFAULT_HEALTH_CONFIGS.get(node_type, DEFAULT_HEALTH_CONFIGS["custom"])
 
 

@@ -334,6 +334,13 @@ def get_session_trace(session_id: str, user_id: str = Depends(get_current_user_i
         "nodes": output_nodes
     }
 
+@app.get("/api/sessions/{session_id}/profiles")
+def get_session_profiles(session_id: str, user_id: str = Depends(get_current_user_id)) -> List[Dict[str, Any]]:
+    """
+    Returns all semantic node profiles inferred for the given session.
+    """
+    return store.list_session_profiles(session_id)
+
 @app.get("/api/sessions/{session_id}/chain")
 def get_session_chain(session_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     """

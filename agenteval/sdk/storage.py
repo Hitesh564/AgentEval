@@ -33,6 +33,8 @@ class TraceStore:
         self.traces = traces
         self.eval_cache = eval_cache
         self.session_links = session_links
+        from agenteval.sdk.schema import node_profiles
+        self.node_profiles = node_profiles
 
         if init_schema is None:
             init_schema = self.backend_name == "sqlite"
@@ -389,7 +391,112 @@ class TraceStore:
                 .values(retrieved_docs=json.dumps(merged_docs))
             )
 
+    def save_node_profile(self, profile_data: Dict[str, Any]):
+        """Saves or updates a node profile in the node_profiles table."""
+        profile_id = profile_data.get("profile_id")
+        if not profile_id:
+            return
+
+        def _json_dumps_safe(obj: Any) -> Optional[str]:
+            if obj is None:
+                return None
+            if isinstance(obj, str):
+                return obj
+            try:
+                return json.dumps(obj, default=str)
+            except Exception:
+                return str(obj)
+
+        now_str = datetime.now().isoformat()
+        values = {
+            "profile_id": profile_id,
+            "session_id": profile_data.get("session_id"),
+            "node_id": str(profile_data.get("node_id", "")),
+            "profile_signature": str(profile_data.get("profile_signature", "")),
+            "profile_version": str(profile_data.get("profile_version", "1.0")),
+            "inferred_role": str(profile_data.get("inferred_role", "custom")),
+            "purpose": str(profile_data.get("purpose", "")),
+            "responsibilities": _json_dumps_safe(profile_data.get("responsibilities")),
+            "inputs_summary": _json_dumps_safe(profile_data.get("inputs_summary")),
+            "outputs_summary": _json_dumps_safe(profile_data.get("outputs_summary")),
+            "tools_used": _json_dumps_safe(profile_data.get("tools_used")),
+            "evaluation_dimensions": _json_dumps_safe(profile_data.get("evaluation_dimensions")),
+            "executable_metrics": _json_dumps_safe(profile_data.get("executable_metrics")),
+            "metric_weights": _json_dumps_safe(profile_data.get("metric_weights")),
+            "confidence": float(profile_data.get("confidence", 1.0)),
+            "created_at": str(profile_data.get("created_at") or now_str),
+            "updated_at": now_str,
+            "user_id": profile_data.get("user_id"),
+        }
+
+        with self.engine.begin() as conn:
+            stmt_select = select(self.node_profiles.c.profile_id).where(self.node_profiles.c.profile_id == profile_id)
+            existing = conn.execute(stmt_select).fetchone()
+            if existing:
+                conn.execute(
+                    update(self.node_profiles)
+                    .where(self.node_profiles.c.profile_id == profile_id)
+                    .values(**values)
+                )
+            else:
+                conn.execute(insert(self.node_profiles).values(**values))
+
+    def get_node_profile(self, session_id: str, node_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a saved node profile by session_id and node_id."""
+        stmt = (
+            select(self.node_profiles)
+            .where(and_(self.node_profiles.c.session_id == session_id, self.node_profiles.c.node_id == node_id))
+            .order_by(self.node_profiles.c.updated_at.desc())
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).fetchone()
+            if not row:
+                return None
+            return self._row_to_profile_dict(row)
+
+    def get_profile_by_signature(self, signature: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a saved node profile by deterministic profile signature."""
+        stmt = (
+            select(self.node_profiles)
+            .where(self.node_profiles.c.profile_signature == signature)
+            .order_by(self.node_profiles.c.updated_at.desc())
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).fetchone()
+            if not row:
+                return None
+            return self._row_to_profile_dict(row)
+
+    def list_session_profiles(self, session_id: str) -> List[Dict[str, Any]]:
+        """Lists all node profiles for a session."""
+        stmt = select(self.node_profiles).where(self.node_profiles.c.session_id == session_id)
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+            return [self._row_to_profile_dict(r) for r in rows]
+
+    def _row_to_profile_dict(self, row: Any) -> Dict[str, Any]:
+        """Converts a database row into a structured profile dictionary."""
+        def _parse_json(val: Optional[str]) -> Any:
+            if not val:
+                return []
+            try:
+                return json.loads(val)
+            except Exception:
+                return val
+
+        # Handle row mapping safely
+        data = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+        data["responsibilities"] = _parse_json(data.get("responsibilities"))
+        data["inputs_summary"] = _parse_json(data.get("inputs_summary"))
+        data["outputs_summary"] = _parse_json(data.get("outputs_summary"))
+        data["tools_used"] = _parse_json(data.get("tools_used"))
+        data["evaluation_dimensions"] = _parse_json(data.get("evaluation_dimensions"))
+        data["executable_metrics"] = _parse_json(data.get("executable_metrics"))
+        data["metric_weights"] = _parse_json(data.get("metric_weights"))
+        return data
+
     def close(self):
         """Disposes engine connections."""
         if hasattr(self, "engine"):
             self.engine.dispose()
+

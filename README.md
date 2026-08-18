@@ -177,6 +177,37 @@ python examples/langgraph_hosted_example.py
 python -m agenteval.adapters.who_when_adapter --cases 15 --mode replay
 ```
 
+## Architecture-Agnostic Workflow & Node Profiling
+
+AgentEval features an **automatic LLM-based Workflow and Node Profiling layer** that allows it to observe, profile, and evaluate arbitrary agent architectures without requiring specific node naming conventions (such as `planner`, `retriever`, `generator`, or `critic`).
+
+### How It Works
+
+1. **Architecture-Agnostic Tracing**: Generic execution traces (`session_id`, `node_id`, `inputs`, `outputs`, `tools`, `retrieved_docs`, `latency`, `tokens`, `cost`, `parent_node_ids`) are collected without requiring node renaming or manual node descriptions.
+2. **Workflow-Level LLM Profiling**: The profiler aggregates all node contexts across a workflow and sends a compact, sanitized `WorkflowContext` to an LLM in **ONE** single profiling request (or batched for workflows >10 nodes).
+3. **Non-Blocking Background Execution**: Profiling is executed asynchronously in the background (`agenteval/profiling/profiler.py`). Tracing and agent execution are never blocked waiting for LLM profiling.
+4. **Deterministic Signature Caching**: Profiles are cached in the database (`node_profiles` table) keyed by a deterministic signature hash computed from node identity, tool signatures, input/output schemas, graph topology, profiler version, and catalog version.
+5. **Dynamic Metric Catalog & Validation**: The profiler automatically discovers executable evaluators implemented in `EvaluationEngine` (`instruction_following`, `semantic_response_quality`, `tool_selection`, `retrieval_evidence`, `groundedness`, `json_validity`, `latency`, `cost_and_tokens`). Inferred conceptual dimensions are mapped to these executable metrics; unsupported dimensions remain descriptive.
+6. **Graceful Fallbacks**: If LLM profiling is offline or API keys are missing, AgentEval falls back to legacy heuristic classification and default quality metrics (`instruction_following`, `semantic_response_quality`, `latency`) without interrupting tracing.
+
+### Real-World Example: Adaptive AI Interview Pipeline
+
+AgentEval handles complex real-world pipelines like the following without manual node classification:
+
+```text
+    Interview Planner
+           ↓
+    Adaptive Interview Agent
+           ↓
+    Evaluation Agent
+```
+
+- **Interview Planner**: Profiled with inferred role `interview_planner`, assigned responsibilities for candidate resume analysis and blueprint creation, evaluated via `instruction_following` and `semantic_response_quality`.
+- **Adaptive Interview Agent**: Profiled with inferred role `adaptive_interview_agent`, assigned multi-role responsibilities for answer review, state update, and next-question generation, evaluated via `tool_selection`, `instruction_following`, and `semantic_response_quality`.
+- **Evaluation Agent**: Profiled with inferred role `interview_evaluation_agent`, assigned responsibilities for full transcript synthesis and assessment, evaluated via `groundedness` and `semantic_response_quality`.
+
+---
+
 ## Backend Server
 
 Start the backend locally:
