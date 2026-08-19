@@ -11,13 +11,8 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from agenteval.eval.metrics import get_llm_response, _resolve_model_name
-from agenteval.profiling.models import (
-    NodeProfile,
-    WorkflowProfile,
-    EvaluationDimension,
-    WorkflowContext,
-    ProfilingMeta,
-)
+from agenteval.profiling.models import NodeProfile, WorkflowProfile, EvaluationDimension, WorkflowContext, ProfilingMeta
+
 from agenteval.profiling.catalog import get_executable_metric_catalog, get_supported_metric_names
 from agenteval.profiling.context import WorkflowContextBuilder
 from agenteval.profiling.prompts import SYSTEM_PROFILER_PROMPT, build_workflow_profiler_prompt, PROFILER_VERSION
@@ -226,7 +221,7 @@ class WorkflowProfiler:
             purpose=str(parsed.get("purpose", "")),
             node_profiles=validated_profiles,
         )
-
+    # Execution traces -> Build context -> check profile cached? -> create profile -> save cache -> return workflow
     def profile_workflow(
         self,
         session_id: str,
